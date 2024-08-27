@@ -50,10 +50,10 @@ async fn main() {
     // If the SPA file exists, set it to the global variable
     if let Some(spa_file_path) = cli_args.spa_file {
         if spa_file_path.exists() {
-            print_info!("SPA file set to: {:?}", spa_file_path);
+            print_info!("SPA file set to: {}", spa_file_path.display());
             unsafe { SPA_FILE = Some(spa_file_path) };
         } else {
-            print_error!("[--spa] File does not exist in the current dir");
+            print_error!("[--spa] File {} does not exist in the current dir", spa_file_path.display());
             std::process::exit(0);
         }
     }
@@ -168,44 +168,8 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
     };
 
     let html = build_html2(path_raw, files_in_curr_path);
-    println!("· HTML: {} bytes", html.len());
     Ok(index(html))
 }
-
-
-
-// fn get_files_in_dir(path: impl AsRef<Path>) -> Result<String, std::io::Error> {
-//     let result = std::fs::read_dir(path)?
-//         .filter_map(|e| {
-//             match e {
-//                 Err(_) => None,
-//                 Ok(e) => {
-//                     let is_dir = match e.file_type() {
-//                         Ok(t) => t.is_dir(),
-//                         Err(_) => false
-//                     };
-
-//                     let file_name = match is_dir {
-//                         true => format!("{}/", e.path().file_name().unwrap().to_str().unwrap()),
-//                         false => e.path().file_name().unwrap().to_str().unwrap().to_string()
-//                     };
-
-//                     let file_size = match is_dir {
-//                         true => "".to_string(),
-//                         false => format_file_size(
-//                             e.metadata().map(|m| m.len()).unwrap_or_default()
-//                         )
-//                     };
-                
-//                     Some(build_html_table_row(is_dir, file_size, file_name))
-//                 }
-//             }
-//         })
-//         .collect::<Vec<_>>()
-//         .join("");
-
-//     Ok(result)
-// }
 
 
 fn get_files_in_dir2(path: impl AsRef<Path>) -> Result<Vec<DirectoryFile>, std::io::Error> {
