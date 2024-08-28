@@ -1,0 +1,87 @@
+name: Builds the release binaries
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            name: ARM64_Linux
+            bin_ext: ""
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            name: ARM64_MacOS
+            bin_ext: ""
+          - target: i686-pc-windows-msvc
+            runner: windows-latest
+            name: x86_Windows_MSVC
+            bin_ext: ".exe"
+          - target: i686-unknown-linux-gnu
+            runner: ubuntu-latest
+            name: x86_Linux
+            bin_ext: ""
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            name: x64_MacOS
+            bin_ext: ""
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            name: x64_Windows_MSVC
+            bin_ext: ".exe"
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            name: x64_Linux
+            bin_ext: ""
+
+    runs-on: ${{ matrix.runner }}
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: install rust compiler
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: build
+        run: cargo build --release --quiet
+      
+      - name: Zip release binaries
+        uses: vimtor/action-zip@v1.2
+        with:
+          dest: ${{ matrix.name }}.zip
+          files: target/release/rusty_pyserver${{ matrix.bin_ext }}
+
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: true
+
+      - name: Upload file
+        uses: actions/upload-release-asset@v1
+        env: 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ matrix.name }}.zip
+          asset_name: ${{ matrix.name }}.zip
+          asset_content_type: application/zip
+
