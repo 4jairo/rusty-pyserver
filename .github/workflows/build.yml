@@ -12,6 +12,10 @@ env:
 jobs:
   create_release:
     runs-on: ubuntu-latest
+
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+          
     steps:
       - name: Create release
         id: create_release
@@ -22,7 +26,7 @@ jobs:
           tag_name: v${{ github.run_number }}
           release_name: Release ${{ github.ref }}
           draft: false
-          prerelease: true
+          prerelease: false
     
   build:
     needs: create_release
