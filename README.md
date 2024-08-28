@@ -2,6 +2,8 @@
 
 This is a simple HTTP server that serves static content to GET requests. It is inspired by the `python -m http.server` command but with extra functionality.
 
+![alt text](image.png)
+
 ## Installation
 
 To use this server, you need to have Rust installed on your system. If you don't have Rust installed, you can download and install it from the official Rust website: [https://www.rust-lang.org/](https://www.rust-lang.org/)
