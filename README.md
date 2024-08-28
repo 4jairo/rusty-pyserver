@@ -11,8 +11,8 @@ To use this server, you need to have Rust installed on your system. If you don't
 Once you have Rust installed, you can clone the repository and build the server using the following commands:
 
 ```bash
-git clone https://github.com/your-username/your-repo.git
-cd your-repo
+git clone https://github.com/4jairo/rusty-pyserver.git
+cd rusty-pyserver
 cargo build --release
 ```
 
