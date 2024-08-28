@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create_github_release:
+  create_release:
     runs-on: ubuntu-latest
     steps:
       - name: Create release
@@ -25,7 +25,7 @@ jobs:
           prerelease: true
     
   build:
-    needs: create_github_release
+    needs: create_release
     strategy:
       matrix:
         include:
