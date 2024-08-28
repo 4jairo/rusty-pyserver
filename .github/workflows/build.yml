@@ -10,7 +10,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  create_github_release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release
+          id: create_release
+          uses: actions/create-release@v1
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          with:
+            tag_name: v${{ github.run_number }}
+            release_name: Release ${{ github.ref }}
+            draft: false
+            prerelease: true
+    
   build:
+    needs: create_github_release
     strategy:
       matrix:
         include:
@@ -65,17 +80,6 @@ jobs:
           dest: ${{ matrix.name }}.zip
           files: target/release/rusty_pyserver${{ matrix.bin_ext }}
 
-      - name: Create release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ github.run_number }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: true
-
       - name: Upload file
         uses: actions/upload-release-asset@v1
         env: 
@@ -83,6 +87,6 @@ jobs:
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: ${{ matrix.name }}.zip
-          asset_name: ${{ matrix.name }}.zip
+          asset_name: rusty_pyserver_${{ matrix.name }}.zip
           asset_content_type: application/zip
 
