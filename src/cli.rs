@@ -1,34 +1,13 @@
 use std::{collections::HashSet, path::{Path, PathBuf}};
 use clap::{Arg, Command, ValueHint};
 
-#[macro_export]
-macro_rules! _print_error {
-    ($($arg:tt)*) => {
-        println!(
-            "⚠️ {}{}{}", inline_colorization::color_red, format_args!($($arg)*), inline_colorization::color_reset
-        )
-    };
-}
-
-#[macro_export]
-macro_rules! _print_info {
-    ($($arg:tt)*) => {
-        println!(
-            "ℹ️ {}{}{}", inline_colorization::color_yellow, format_args!($($arg)*), inline_colorization::color_reset
-        )
-    };
-}
-
-pub use _print_error as print_error;
-pub use _print_info as print_info;
-
-
 
 pub struct CliArgs {
     pub show_html: bool,
     pub only_localhost: bool,
     pub spa_file: Option<PathBuf>,
-    pub listen_ports: HashSet<u16>
+    pub listen_ports: HashSet<u16>,
+    pub log_file: Option<PathBuf>,
 }
 
 impl CliArgs {
@@ -63,6 +42,14 @@ impl CliArgs {
                     .value_hint(ValueHint::FilePath)
                     .default_missing_value("index.html")
                     .num_args(0..=1)
+            )
+            .arg(
+                Arg::new("log-file")
+                    .long("log-file")
+                    .help("Logs all requests to a file")
+                    .value_hint(ValueHint::FilePath)
+                    .num_args(1)
+                    .default_missing_value("requests.log")
             )
             .get_matches();
 
@@ -101,12 +88,17 @@ impl CliArgs {
         if listen_ports.len() == 0 {
             listen_ports.insert(80);
         }
+
+        let log_file = matches
+            .get_one::<String>("log-file")
+            .map(PathBuf::from);
     
         Self {
             listen_ports,
             only_localhost,
             spa_file,
-            show_html
+            show_html,
+            log_file
         }
     }
 }

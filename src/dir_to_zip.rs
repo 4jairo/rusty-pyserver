@@ -10,11 +10,12 @@ use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use walkdir::WalkDir;
 use zipit::{Archive, FileDateTime};
-use crate::{BoxBodyResponse, SERVER_NAME_HEADER};
+use crate::reader_inspector::ReaderInspector;
+use crate::{BoxBodyResponse, CHUNK_SIZE, SERVER_NAME_HEADER};
 
 
 pub async fn dir_to_zip(dir: impl AsRef<str>) -> HyperResult<BoxBodyResponse> {
-    let (a, b) = tokio::io::duplex(1024 * 8);
+    let (a, b) = tokio::io::duplex(CHUNK_SIZE);
     
     let dir = dir.as_ref();
     let dir_clone = dir.to_string();
@@ -54,7 +55,7 @@ pub async fn dir_to_zip(dir: impl AsRef<str>) -> HyperResult<BoxBodyResponse> {
        //None
     });
 
-    let reader_stream = ReaderStream::new(b);
+    let reader_stream = ReaderInspector::new(ReaderStream::new(b));
     let body = StreamBody::new(reader_stream.map_ok(Frame::data)).boxed();
     let zip_name = match dir {
         "." => "result".to_string(),

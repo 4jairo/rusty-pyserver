@@ -5,6 +5,8 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER};
 use hyper_util::rt::TokioIo;
 use local_response::{index, not_found};
+use logger::{update_stats, StatsMsg};
+use reader_inspector::ReaderInspector;
 use tokio_util::io::ReaderStream;
 use hyper::{
     body::Frame,
@@ -26,10 +28,13 @@ use std::{
     path::{Path, PathBuf},
 };
 use crate::{
-    cli::{CliArgs, print_error, print_info},
+    cli::CliArgs,
     html::{format_file_size, DirectoryFile, build_html2},
 };
 
+#[macro_use]
+mod logger;
+mod reader_inspector;
 mod html;
 mod cli;
 mod dir_to_zip;
@@ -39,13 +44,23 @@ type BoxBodyResponse = Response<BoxBody<Bytes, std::io::Error>>;
 
 static mut SHOW_HTML: bool = false;
 static mut SPA_FILE: Option<PathBuf> = None;
+static mut LOG_FILE: Option<PathBuf> = None;
 const SERVER_NAME_HEADER: &str = "RustyPyserver";
+const CHUNK_SIZE: usize = 32 * 1024;
 
 
 #[tokio::main]
 async fn main() {
+    // Make space for the logger msgs
+    println!();
+    logger::init_stats_logger();
+
     let cli_args = CliArgs::parse();
-    unsafe { SHOW_HTML = cli_args.show_html };
+    unsafe { 
+        SHOW_HTML = cli_args.show_html;
+        LOG_FILE = cli_args.log_file;
+    };
+
 
     // If the SPA file exists, set it to the global variable
     if let Some(spa_file_path) = cli_args.spa_file {
@@ -53,33 +68,32 @@ async fn main() {
             print_info!("SPA file set to: {}", spa_file_path.display());
             unsafe { SPA_FILE = Some(spa_file_path) };
         } else {
-            print_error!("[--spa] File {} does not exist in the current dir", spa_file_path.display());
-            std::process::exit(0);
+            print_error!(0; "[--spa] File {} does not exist in the current dir", spa_file_path.display());
         }
     }
 
     let mut listeners = Vec::with_capacity(cli_args.listen_ports.len());
 
     for port in cli_args.listen_ports {
+        let addr = match cli_args.only_localhost {
+            true => format!("localhost:{}", port),
+            false => format!("0.0.0.0:{}", port),
+        };
+
+        let listener = match TcpListener::bind(&addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                print_error!("TcpListener bind error: {e}");
+                continue;
+            }
+        };
+
+        match cli_args.only_localhost {
+            true => print_info!("Listening on http://localhost:{}", port),
+            false => print_info!("Listening on http://localhost:{} and http://{}", port, addr)
+        };
+
         let handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
-            let addr = match cli_args.only_localhost {
-                true => format!("localhost:{}", port),
-                false => format!("0.0.0.0:{}", port),
-            };
-
-            let listener = match TcpListener::bind(&addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    print_error!("TcpListener bind error: {e}");
-                    return Ok(())
-                }
-            };
-
-            match cli_args.only_localhost {
-                true => print_info!("Listening on http://localhost:{}", port),
-                false => print_info!("Listening on http://localhost:{} and http://{}", port, addr)
-            };
-
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     continue;
@@ -87,14 +101,16 @@ async fn main() {
 
                 let from_who = stream.peer_addr().unwrap();
                 let io = TokioIo::new(stream);
-
+                
                 tokio::spawn(async move {
+                    update_stats(StatsMsg::NewRequest);
                     if let Err(err) = http1::Builder::new()
                         .serve_connection(io, service_fn(|req| handle_response(req, from_who, port)))
                         .await
                     {
                         print_error!("{} -> Failed to serve connection: {:?}", from_who, err);
                     }
+                    update_stats(StatsMsg::RequestEnded);
                 });
             }
         });
@@ -113,7 +129,7 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
 
     let method = req.method();
     let now = chrono::Local::now().format("%d-%m-%Y %H:%M:%S");
-    println!(":{port} [{now}] --> {who} --> {method} {path_raw}");
+    print_request!(":{port} [{now}] --> {who} --> {method} {path_raw}");
 
     let path = match path_raw.len() {
         1 => ".", // If the path is just '/', serve the current directory
@@ -168,6 +184,7 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
     };
 
     let html = build_html2(path_raw, files_in_curr_path);
+    update_stats(StatsMsg::SendedBytes(html.len() as u32));
     Ok(index(html))
 }
 
@@ -208,7 +225,9 @@ fn get_files_in_dir2(path: impl AsRef<Path>) -> Result<Vec<DirectoryFile>, std::
 async fn file_send(filename: impl AsRef<Path>, file_len: usize) -> HyperResult<BoxBodyResponse> {
     //Wrap to a tokio_util::io::ReaderStream
     let reader_stream = match File::open(&filename).await {
-        Ok(file) => ReaderStream::with_capacity(file, 8 * 1024),
+        Ok(file) => ReaderInspector::new(
+            ReaderStream::with_capacity(file, CHUNK_SIZE)
+        ),
         Err(_) => return Ok(not_found()),
     };
 
