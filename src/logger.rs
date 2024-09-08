@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, sync::{mpsc, OnceLock}, time::{Duration, Instant}};
+use std::{collections::VecDeque, fs::File, io::Write, sync::{mpsc, OnceLock}, time::{Duration, Instant}};
 use crossterm::{cursor, execute, style::{Color, Print, ResetColor, SetForegroundColor}, terminal::{Clear, ClearType}};
 use crate::{html::format_file_size, LOG_FILE};
 
@@ -68,37 +68,27 @@ pub struct Stats {
     pub bandwith: BandwithTracker,
 }
 
+#[derive(Default)]
 pub struct BandwithTracker {
-    bytes: u64,
-    start: Instant,
-    records: Vec<u64>
-}
-impl Default for BandwithTracker {
-    fn default() -> Self {
-        Self {
-            bytes: 0,
-            start: Instant::now(),
-            records: vec![0; Self::RECORDS_SIZE]
-        }
-    }
+    timestamps: VecDeque<(Instant, u32)>
 }
 impl BandwithTracker {
-    const RECORDS_SIZE: usize = 20;
+    pub fn add_bytes(&mut self, bytes: u32) {
+        self.timestamps.push_back((Instant::now(), bytes));
+    }
 
     pub fn get_bandwith(&mut self) -> u64 {
         let now = Instant::now();
-        let elapsed = (now - self.start).as_secs_f64();
 
-        let b = (self.bytes as f64 / elapsed) as u64;
-        if self.records.len() == Self::RECORDS_SIZE {
-            self.records.remove(0);
-        }
-        self.records.push(b);
+        while let Some((time, _)) = self.timestamps.front() {
+            if (now - *time).as_millis() > 1000 {
+                self.timestamps.pop_front();
+            } else {
+                break;
+            }
+        } 
 
-        self.bytes = 0;
-        self.start = now;
-
-        self.records.iter().sum::<u64>() / Self::RECORDS_SIZE as u64
+        self.timestamps.iter().map(|(_,b)| *b as u64).sum::<u64>()
     }
 }
 
@@ -224,7 +214,7 @@ pub fn init_stats_logger() {
                         }
                     },
                     StatsMsg::SendedBytes(b) => {
-                        stats.bandwith.bytes += b as u64;
+                        stats.bandwith.add_bytes(b);
                     },
                     StatsMsg::Refresh => {
                         print_stats(&mut stats);

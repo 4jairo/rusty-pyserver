@@ -28,13 +28,13 @@ rusty_pyserver 3000 3001 3002
 ```
 
 
-- Html: The browser will show the content of the requested file instead of downloading it. This argument only changes the Content-Type header (from static "application/octet-stream" to actual mime), so it's up to the browser to show / download the content `default: false`
+- Html: The browser will show the content of the requested file instead of downloading it. This argument only changes the Content-Type header (from static "application/octet-stream" to actual mime), so it's up to the browser to show / download the content `default: disabled`
 
 ```
 rusty_pyserver --html
 ```
 
-- Spa: Serves the HTML file located in the current directory when the requested URI points to a direcotry (will set the --html flag to true) `default: false` `default vaule: index.html`
+- Spa: Serves the HTML file located in the current directory when the requested URI points to a direcotry (will enable the --html flag) `default: disabled` `default vaule: index.html`
 
 ```
 rusty_pyserver --spa
@@ -45,13 +45,18 @@ curl http://localhost:80/main.css            # returns the requested file
 ```
 
 
-- Local: Uses only localhost instead of both your localhost and the local network IP addresses `default: false`
+- Local: Uses only localhost instead of both your localhost and the local network IP addresses `default: disabled`
 
 ```
 rusty_pyserver          # localhost:80 & 0.0.0.0:80
 rusty_pyserver --local  # localhost:80
 ```
 
+- Logs file: Writes all the logs except the stats line to the specified file. `default: disabled` `default value: requests.log`
+
+```
+rusty_pyserver --log-file output.log
+```
 
 
 ## Extra Functionality

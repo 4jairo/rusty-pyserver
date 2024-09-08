@@ -233,7 +233,7 @@ async fn file_send(filename: impl AsRef<Path>, file_len: usize) -> HyperResult<B
 
     let mime = unsafe {
         match SHOW_HTML {
-            true => mime_guess::from_path(&filename).first_or_octet_stream(),
+            true => mime_guess::from_path(&filename).first_or_text_plain(),
             false => mime_guess::mime::APPLICATION_OCTET_STREAM
         }
     };
