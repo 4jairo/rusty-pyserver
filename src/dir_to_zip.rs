@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
@@ -13,6 +14,17 @@ use zipit::{Archive, FileDateTime};
 use crate::reader_inspector::ReaderInspector;
 use crate::{BoxBodyResponse, CHUNK_SIZE, SERVER_NAME_HEADER};
 
+fn parse_path_name(path: Cow<str>) -> String {
+    #[cfg(windows)]
+    {
+        path.replace("\\", "/")
+    }
+
+    #[cfg(not(windows))]
+    {
+        path.to_string()
+    }
+}
 
 pub async fn dir_to_zip(dir: impl AsRef<str>) -> HyperResult<BoxBodyResponse> {
     let (a, b) = tokio::io::duplex(CHUNK_SIZE);
@@ -31,7 +43,7 @@ pub async fn dir_to_zip(dir: impl AsRef<str>) -> HyperResult<BoxBodyResponse> {
             }
     
             let path = entry.path();
-            let name = path.strip_prefix(&dir_clone).unwrap().to_string_lossy().to_string();
+            let name = parse_path_name(path.strip_prefix(&dir_clone).unwrap().to_string_lossy());
             let mut file = match File::open(path).await {
                 Err(_err) => continue, //Some(error_response(err.to_string())), // panic!("\n{}\n", err),
                 Ok(file) => file,
