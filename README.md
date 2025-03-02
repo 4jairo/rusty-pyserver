@@ -2,8 +2,6 @@
 
 This is a simple HTTP server that serves static content to GET requests. It is inspired by the `python -m http.server` command but with extra functionality.
 
-demo: https://rusty-pyserver.4jairo.tech
-
 ![alt text](image.png)
 
 ## Installation
