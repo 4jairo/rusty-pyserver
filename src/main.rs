@@ -77,7 +77,7 @@ async fn main() {
     for port in cli_args.listen_ports {
         let addr = match cli_args.only_localhost {
             true => format!("localhost:{}", port),
-            false => format!("0.0.0.0:{}", port),
+            false => format!("[::]:{}", port),
         };
 
         let listener = match TcpListener::bind(&addr).await {
