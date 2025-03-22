@@ -1,5 +1,7 @@
+use askama::Template;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
+use html::HtmlTemplate;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER};
@@ -29,7 +31,7 @@ use std::{
 };
 use crate::{
     cli::CliArgs,
-    html::{format_file_size, DirectoryFile, build_html2},
+    html::{format_file_size, DirectoryFile},
 };
 
 #[macro_use]
@@ -182,15 +184,16 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
         Ok(files) => files,
         Err(_) => return Ok(not_found()),
     };
-
-    let html = build_html2(path_raw, files_in_curr_path);
+    
+    let template = HtmlTemplate::new(path_raw, files_in_curr_path).unwrap();
+    let html = template.render().unwrap();
     update_stats(StatsMsg::SendedBytes(html.len() as u32));
     Ok(index(html))
 }
 
 
 fn get_files_in_dir2(path: impl AsRef<Path>) -> Result<Vec<DirectoryFile>, std::io::Error> {
-    let result = std::fs::read_dir(path)?
+    let mut result = std::fs::read_dir(path)?
         .filter_map(|e| {
             match e {
                 Err(_) => None,
@@ -201,8 +204,8 @@ fn get_files_in_dir2(path: impl AsRef<Path>) -> Result<Vec<DirectoryFile>, std::
                     };
 
                     let file_name = match is_dir {
-                        true => format!("{}/", e.path().file_name().unwrap().to_str().unwrap()),
-                        false => e.path().file_name().unwrap().to_str().unwrap().to_string()
+                        true => format!("{}/", e.path().file_name().unwrap_or_default().to_string_lossy()),
+                        false => e.path().file_name().unwrap_or_default().to_string_lossy().to_string()
                     };
 
                     let file_size = match is_dir {
@@ -218,6 +221,7 @@ fn get_files_in_dir2(path: impl AsRef<Path>) -> Result<Vec<DirectoryFile>, std::
         })
         .collect::<Vec<_>>();
 
+    result.sort_by(|a,b| natord::compare(&a.file_name, &b.file_name));
     Ok(result)
 }
 

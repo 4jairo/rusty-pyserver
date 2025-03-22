@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Contents of {{ uri_path }}</title>
+    <style>
+        * {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        }
+        .hovered {
+            color: blue;
+        }
+        button, span {
+            cursor: pointer
+        }
+        div {
+            margin: 20px 0;
+            display: flex;
+            gap: 20px;
+        }
+        body {
+            width: 90%;
+            margin: 10px auto;
+        }
+        table {
+            border-collapse: collapse;
+        }
+        table th, table td {
+            border: 1px solid black;
+            padding: 5px 20px;
+            text-align: center;
+        }
+        table th {
+            background-color: #f1f1c1;
+            cursor: pointer;
+            user-select: none;
+        }
+        table th:last-child, table td:last-child {
+            text-align: left;
+        }
+        table tr:nth-child(odd) {
+            background-color: #d2d2d2;
+        }
+    </style>
+</head>
+<body>
+    <h1 id="title">Contents of </h1>
+    <div>
+        <button onclick="window.history.back()">Back</button>
+        <a href="/*{{ uri_path }}">Download as ZIP from current path</a>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th onclick="sortByType()">Type</th>
+                <th onclick="sortBySize()">Size</th>
+                <th onclick="sortByName()">File Name</th>
+            </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+    </table>
+
+    <script type="text/javascript">
+        //const rows = {{ files_json }}
+        const rows = [[false, 1234, "file2"], [true, 2345, "file10"], [true, 3456, "file3"]]
+        const rowsElmt = document.getElementById('rows')
+        const title = document.getElementById('title')
+        // const uriPath = "{{ uri_path }}"
+        const uriPath = "/"
+
+        function splitUriPath() {
+            const parts = uriPath.slice(0, -1).split('/')
+            const spans = parts.map((p) => ({
+                span: document.createElement('span'),
+                p
+            }))
+            
+            for (let i = 0; i < spans.length; i++) {
+                const { p, span } = spans[i]
+                span.innerText = `${p}/`
+
+                span.onmouseenter = () => {
+                    for (const s of spans.slice(0, i +1)) {
+                        s.span.classList.add('hovered')
+                    }
+                }
+
+                span.onmouseleave = () => {
+                    for (const s of spans) {
+                        s.span.classList.remove('hovered')
+                    }
+                }
+
+                span.onclick = () => {
+                    const newUri = spans.slice(0, i +1).map(({ p }) => p).join('/') + '/'
+                    window.location.href = newUri
+                }
+
+                title.appendChild(span)
+            }
+        }
+
+        function render() {
+            let html = ''
+            
+            rows.forEach(([isDir, fileSize, fileName]) => {
+                const icon = isDir 
+                    ? '<svg width="1.2em" height="1.2em" viewBox="0 0 24 24"><path d="M4 20q-.825 0-1.412-.587T2 18V6q0-.825.588-1.412T4 4h6l2 2h8q.825 0 1.413.588T22 8H4v10l2.4-8h17.1l-2.575 8.575q-.2.65-.737 1.038T19 20z"/></svg>' 
+                    : '<svg width="1.2em" height="1.2em" viewBox="0 0 24 24"><path d="M19 19H8q-.825 0-1.412-.587T6 17V3q0-.825.588-1.412T8 1h6.175q.4 0 .763.15t.637.425l4.85 4.85q.275.275.425.638t.15.762V17q0 .825-.587 1.413T19 19m0-11h-3.5q-.625 0-1.062-.437T14 6.5V3H8v14h11zM4 23q-.825 0-1.412-.587T2 21V8q0-.425.288-.712T3 7t.713.288T4 8v13h10q.425 0 .713.288T15 22t-.288.713T14 23zM8 3v5zv14z"/></svg>'
+    
+                html += `<tr>
+                    <td>${icon}</td>
+                    <td>${fileSize}</td>
+                    <td><a href="${fileName}">${fileName}</a></td>
+                </tr>`
+            })
+
+            rowsElmt.innerHTML = html
+        }
+
+        render()
+        splitUriPath()
+
+        let lastSortByTypeAsc = false
+        let lastSortBySizeAsc = false
+        let lastSortByNameAsc = false
+        const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+        
+        function sortByType() {
+            if (rows.length < 2) return
+            rows.sort(([a,], [b,]) => lastSortByTypeAsc ? collator.compare(b, a) : collator.compare(a, b))
+
+            lastSortByTypeAsc = !lastSortByTypeAsc
+            render()
+        }
+
+        function sortBySize() {
+            if (rows.length < 2) return
+            rows.sort(([,a], [,b]) => {
+                return lastSortBySizeAsc ? collator.compare(b, a) : collator.compare(a, b)
+            })
+
+            lastSortBySizeAsc = !lastSortBySizeAsc
+            render()
+        }
+
+        function sortByName() {
+            if (rows.length < 2) return
+            rows.sort(([,,a], [,,b]) => lastSortByNameAsc ? collator.compare(b, a) : collator.compare(a, b))
+
+            lastSortByNameAsc = !lastSortByNameAsc
+            render()
+        }
+    </script>
+</body>
+</html>
+
