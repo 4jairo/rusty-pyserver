@@ -62,12 +62,12 @@
     </table>
 
     <script type="text/javascript">
-        //const rows = {{ files_json }}
-        const rows = [[false, 1234, "file2"], [true, 2345, "file10"], [true, 3456, "file3"]]
+        const rows = {{ files_json }}
+        //const rows = [[false, 1234, "file2"], [true, 2345, "file10"], [true, 3456, "file3"]]
         const rowsElmt = document.getElementById('rows')
         const title = document.getElementById('title')
-        // const uriPath = "{{ uri_path }}"
-        const uriPath = "/"
+        const uriPath = "{{ uri_path }}"
+        //const uriPath = "/"
 
         function splitUriPath() {
             const parts = uriPath.slice(0, -1).split('/')
