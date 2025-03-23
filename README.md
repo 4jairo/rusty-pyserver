@@ -70,7 +70,7 @@ rusty_pyserver --log_file output.log
     ```
     rusty_pyserver --tls_auto localhost example.com
 
-    curl https://localhost --insecure # not in any CA
+    curl https://localhost --insecure   # not in any CA
     ```
 
 ## Extra Functionality
