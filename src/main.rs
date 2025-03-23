@@ -9,6 +9,7 @@ use hyper_util::rt::TokioIo;
 use local_response::{index, not_found};
 use logger::{update_stats, StatsMsg};
 use reader_inspector::ReaderInspector;
+use serde::Deserialize;
 use tls::{AcceptConnection, TlsWrapper, WithTls, WithoutTls};
 use tokio_util::io::ReaderStream;
 use hyper::{
@@ -154,6 +155,10 @@ async fn main() {
     }
 }
 
+#[derive(Deserialize, Debug)]
+struct QueryParams {
+    files: String
+}
 
 async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> HyperResult<BoxBodyResponse> {
     let path_raw = urlencoding::decode(req.uri().path()).unwrap_or_default();
@@ -174,7 +179,15 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
             _ => &path[2..],
         };
 
-        return dir_to_zip::dir_to_zip(path).await;
+        let query_raw = urlencoding::decode(req.uri().query().unwrap_or_default()).unwrap_or_default();
+        let Ok(files_json) = serde_qs::from_str::<QueryParams>(&query_raw) else {
+            return Ok(not_found());
+        };
+        let Ok(files) = serde_json::from_str::<Vec<String>>(&files_json.files) else {
+            return Ok(not_found());
+        };
+
+        return dir_to_zip::dir_to_zip(path, files).await;
     }
 
     let path_metadata = match fs::metadata(path).await {

@@ -25,7 +25,6 @@ impl WithTls {
     pub fn new(tls_conf: TlsConfig) -> anyhow::Result<Self> { 
         let (certs, key) = match tls_conf {
             TlsConfig::Generated(domains) => {
-                print_info!("{:?}", domains);
                 let certs = rcgen::generate_simple_self_signed(domains)?;
                 let cert_der = CertificateDer::from(certs.cert);
                 let key_der = PrivateKeyDer::try_from(certs.key_pair.serialize_der()).map_err(|e| anyhow::anyhow!(e))?;

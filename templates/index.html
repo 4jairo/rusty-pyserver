@@ -10,6 +10,9 @@
         .hovered {
             color: blue;
         }
+        input[type="checkbox"] {
+            cursor: pointer;
+        }
         button, span {
             cursor: pointer
         }
@@ -47,7 +50,8 @@
     <h1 id="title">Contents of </h1>
     <div>
         <button onclick="window.history.back()">Back</button>
-        <a href="/*{{ uri_path }}">Download as ZIP from current path</a>
+        <!-- <a href="/*{{ uri_path }}">Download as ZIP from current path</a> -->
+        <a id="zip" href="/*{{uri_path}}">Download Selected files as ZIP</a>
     </div>
 
     <table>
@@ -56,6 +60,9 @@
                 <th onclick="sortByType()">Type</th>
                 <th onclick="sortBySize()">Size</th>
                 <th onclick="sortByName()">File Name</th>
+                <th>
+                   <input onclick="selectAll()" type="checkbox" checked/>
+                </th>
             </tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -66,6 +73,7 @@
         //const rows = [[false, 1234, "file2"], [true, 2345, "file10"], [true, 3456, "file3"]]
         const rowsElmt = document.getElementById('rows')
         const title = document.getElementById('title')
+        const zipDownloader = document.getElementById('zip')
         const uriPath = "{{ uri_path }}"
         //const uriPath = "/"
 
@@ -101,10 +109,29 @@
             }
         }
 
+        let selected = rows.map((_, i) => i)
+        function selectAll() {
+            if(selected.length === rows.length) {
+                selected.length = 0
+            } else {
+                selected = rows.map((_, i) => i)
+            }
+            render()
+        }
+
+        function selectRow(i) {
+            if(selected.includes(i)) {
+                selected = selected.filter(num => num !== i)
+            } else {
+                selected.push(i)
+            }
+            render()
+        }
+
         function render() {
             let html = ''
             
-            rows.forEach(([isDir, fileSize, fileName]) => {
+            rows.forEach(([isDir, fileSize, fileName], i) => {
                 const icon = isDir 
                     ? '<svg width="1.2em" height="1.2em" viewBox="0 0 24 24"><path d="M4 20q-.825 0-1.412-.587T2 18V6q0-.825.588-1.412T4 4h6l2 2h8q.825 0 1.413.588T22 8H4v10l2.4-8h17.1l-2.575 8.575q-.2.65-.737 1.038T19 20z"/></svg>' 
                     : '<svg width="1.2em" height="1.2em" viewBox="0 0 24 24"><path d="M19 19H8q-.825 0-1.412-.587T6 17V3q0-.825.588-1.412T8 1h6.175q.4 0 .763.15t.637.425l4.85 4.85q.275.275.425.638t.15.762V17q0 .825-.587 1.413T19 19m0-11h-3.5q-.625 0-1.062-.437T14 6.5V3H8v14h11zM4 23q-.825 0-1.412-.587T2 21V8q0-.425.288-.712T3 7t.713.288T4 8v13h10q.425 0 .713.288T15 22t-.288.713T14 23zM8 3v5zv14z"/></svg>'
@@ -113,10 +140,14 @@
                     <td>${icon}</td>
                     <td>${fileSize}</td>
                     <td><a href="${fileName}">${fileName}</a></td>
+                    <td>
+                        <input oninput="selectRow(${i})" type="checkbox" ${selected.includes(i) ? 'checked' : ''}/>
+                    </td>
                 </tr>`
             })
 
             rowsElmt.innerHTML = html
+            zipDownloader.href = `/*${uriPath}?files=${JSON.stringify(selected.map(s => rows[s][2]))}`
         }
 
         render()

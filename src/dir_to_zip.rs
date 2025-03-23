@@ -1,4 +1,6 @@
 use std::borrow::Cow;
+use std::ffi::OsStr;
+use std::fs;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
@@ -7,7 +9,7 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Frame;
 use hyper::header::{CONTENT_DISPOSITION, CONTENT_TYPE, SERVER};
 use hyper::{Response, StatusCode, Result as HyperResult};
-use tokio::fs::File;
+use tokio::fs::{metadata, File};
 use tokio_util::io::ReaderStream;
 use walkdir::WalkDir;
 use zipit::{Archive, FileDateTime};
@@ -26,7 +28,7 @@ fn parse_path_name(path: Cow<str>) -> String {
     }
 }
 
-pub async fn dir_to_zip(dir: impl AsRef<str>) -> HyperResult<BoxBodyResponse> {
+pub async fn dir_to_zip(dir: impl AsRef<str>, files: Vec<String>) -> HyperResult<BoxBodyResponse> {
     let (a, b) = tokio::io::duplex(CHUNK_SIZE);
     
     let dir = dir.as_ref();
@@ -34,37 +36,49 @@ pub async fn dir_to_zip(dir: impl AsRef<str>) -> HyperResult<BoxBodyResponse> {
     tokio::spawn(async move {
         let mut archive = Archive::new(a);
 
-        for entry in WalkDir::new(&dir_clone) {
-            let Ok(entry) = entry else {
+        
+        for entry_dir in WalkDir::new(&dir_clone).max_depth(1).min_depth(1) {
+            let Ok(entry_dir) = entry_dir else {
                 continue;
-            };
-            if entry.file_type().is_dir() {
+            }; 
+            if !files.is_empty() && !files.iter().any(|f| entry_dir.file_name().to_str() == Some(f.as_str())) {
                 continue;
             }
-    
-            let path = entry.path();
-            let name = parse_path_name(path.strip_prefix(&dir_clone).unwrap().to_string_lossy());
-            let mut file = match File::open(path).await {
-                Err(_err) => continue, //Some(error_response(err.to_string())), // panic!("\n{}\n", err),
-                Ok(file) => file,
-            };
-            
-            let systemtime = match file.metadata().await {
-                Err(_err) => SystemTime::now(),
-                Ok(m) => m.modified().unwrap_or(SystemTime::now())
-            };
-            let datetime = DateTime::<Local>::from(systemtime);
-            let datetime = FileDateTime::from_chrono_datetime(datetime);
 
-            if let Err(_err) = archive.append(name, datetime, &mut file).await {
-                continue; //Some(error_response(err.to_string())); // panic!("\n{}\n", err)
+ 
+
+            for entry in WalkDir::new(&entry_dir.path()) {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                if entry.file_type().is_dir() {
+                    continue;
+                }
+        
+                let path = entry.path();
+                let name = parse_path_name(path.strip_prefix(&dir_clone).unwrap().to_string_lossy());
+                let mut file = match File::open(path).await {
+                    Err(_err) => continue,
+                    Ok(file) => file,
+                };
+                
+                let systemtime = match file.metadata().await {
+                    Err(_err) => SystemTime::now(),
+                    Ok(m) => m.modified().unwrap_or(SystemTime::now())
+                };
+                let datetime = DateTime::<Local>::from(systemtime);
+                let datetime = FileDateTime::from_chrono_datetime(datetime);
+    
+                if let Err(_err) = archive.append(name, datetime, &mut file).await {
+                    continue;
+                }
             }
         }
+        
 
         if let Err(_err) = archive.finalize().await {
-            return //Some(error_response(err.to_string())); // panic!("\n{}\n", err)
+            return
         }
-       //None
     });
 
     let reader_stream = ReaderInspector::new(ReaderStream::new(b));
