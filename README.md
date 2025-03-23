@@ -20,7 +20,7 @@ cargo build --release
 
 ## Arguments
 
-- Ports: Assigns single or multiple ports to the server. `default: 80`
+- Ports: Assigns single or multiple ports to the server. `default: 80 or 443`
 
 ```
 rusty_pyserver 3000
@@ -69,6 +69,8 @@ rusty_pyserver --log_file output.log
 
     ```
     rusty_pyserver --tls_auto localhost example.com
+
+    curl https://localhost --insecure # not in any CA
     ```
 
 ## Extra Functionality

@@ -20,7 +20,6 @@ impl CliArgs {
             .about("http server that will serve static content to GET requests")
             .arg(
                 Arg::new("ports")
-                    .default_value("80")
                     .index(1)
                     .allow_negative_numbers(false)
                     .num_args(0..=u16::MAX as usize)
@@ -88,24 +87,6 @@ impl CliArgs {
             .cloned()
             .unwrap_or_default();
     
-        let mut listen_ports = matches
-            .get_many::<String>("ports")
-            .unwrap_or_default()
-            .filter_map(|p| {
-                match p.parse::<u16>() {
-                    Ok(port) => Some(port),
-                    Err(_) => {
-                        print_error!("-> [ports] Ignoring port `{p}`, valid ports: {} - {}", u16::MIN, u16::MAX);
-                        None
-                    }
-                }
-            })
-            .collect::<HashSet<_>>();
-    
-        if listen_ports.len() == 0 {
-            listen_ports.insert(80);
-        }
-
         let log_file = matches
             .get_one::<String>("log_file")
             .map(PathBuf::from);
@@ -123,6 +104,27 @@ impl CliArgs {
                 let domains = tls_auto.cloned().collect::<Vec<_>>();
                 tls = Some(TlsConfig::Generated(domains));
             }
+        }
+
+        let mut listen_ports = matches
+            .get_many::<String>("ports")
+            .unwrap_or_default()
+            .filter_map(|p| {
+                match p.parse::<u16>() {
+                    Ok(port) => Some(port),
+                    Err(_) => {
+                        print_error!("-> [ports] Ignoring port `{p}`, valid ports: {} - {}", u16::MIN, u16::MAX);
+                        None
+                    }
+                }
+            })
+            .collect::<HashSet<_>>();
+    
+        if listen_ports.len() == 0 {
+            match tls.is_some() {
+                true => listen_ports.insert(443),
+                false => listen_ports.insert(80)
+            };
         }
     
         Self {
