@@ -55,9 +55,21 @@ rusty_pyserver --local  # localhost:80
 - Logs file: Writes all the logs except the stats line to the specified file. `default: disabled` `default value: requests.log`
 
 ```
-rusty_pyserver --log-file output.log
+rusty_pyserver --log_file output.log
 ```
 
+- TLS: Enables TLS (HTTPS) 
+    - Provided: Providing the certificate and private key files
+
+    ```
+    rusty_pyserver --tls cert.pem key.pem
+    ```
+
+    - Auto: With a generated self-signed certificate and the provided subject alt names
+
+    ```
+    rusty_pyserver --tls_auto localhost example.com
+    ```
 
 ## Extra Functionality
 

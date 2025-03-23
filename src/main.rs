@@ -9,6 +9,7 @@ use hyper_util::rt::TokioIo;
 use local_response::{index, not_found};
 use logger::{update_stats, StatsMsg};
 use reader_inspector::ReaderInspector;
+use tls::{AcceptConnection, TlsWrapper, WithTls, WithoutTls};
 use tokio_util::io::ReaderStream;
 use hyper::{
     body::Frame,
@@ -25,6 +26,7 @@ use tokio::{
     fs::{self, File},
     net::TcpListener,
 };
+use std::process::exit;
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -41,6 +43,7 @@ mod html;
 mod cli;
 mod dir_to_zip;
 mod local_response;
+mod tls;
 
 type BoxBodyResponse = Response<BoxBody<Bytes, std::io::Error>>;
 
@@ -75,6 +78,23 @@ async fn main() {
     }
 
     let mut listeners = Vec::with_capacity(cli_args.listen_ports.len());
+    let protocol = match cli_args.tls {
+        Some(_) => "https",
+        None => "http"
+    };
+
+    let tls = match cli_args.tls {
+        Some(tls_conf) => {
+            match WithTls::new(tls_conf) {
+                Ok(w) => TlsWrapper::With(w),
+                Err(err) => {
+                    print_error!("Failed to create TLS acceptor: {}", err);
+                    exit(1);
+                }
+            }
+        },
+        None => TlsWrapper::Without(WithoutTls::default())
+    };
 
     for port in cli_args.listen_ports {
         let addr = match cli_args.only_localhost {
@@ -91,10 +111,11 @@ async fn main() {
         };
 
         match cli_args.only_localhost {
-            true => print_info!("Listening on http://localhost:{}", port),
-            false => print_info!("Listening on http://localhost:{} and http://{}", port, addr)
+            true => print_info!("Listening on {protocol}://localhost:{port}"),
+            false => print_info!("Listening on {protocol}://localhost:{port} and {protocol}://{addr}")
         };
 
+        let tls_cp = tls.clone();
         let handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
@@ -102,8 +123,16 @@ async fn main() {
                 };
 
                 let from_who = stream.peer_addr().unwrap();
-                let io = TokioIo::new(stream);
                 
+                let stream = match tls_cp.accept(stream).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        print_error!("{e}");
+                        continue;
+                    }
+                };
+                let io = TokioIo::new(stream);
+
                 tokio::spawn(async move {
                     update_stats(StatsMsg::NewRequest);
                     if let Err(err) = http1::Builder::new()

@@ -1,6 +1,8 @@
 use std::{collections::HashSet, path::{Path, PathBuf}};
 use clap::{Arg, Command, ValueHint};
 
+use crate::tls::TlsConfig;
+
 
 pub struct CliArgs {
     pub show_html: bool,
@@ -8,6 +10,7 @@ pub struct CliArgs {
     pub spa_file: Option<PathBuf>,
     pub listen_ports: HashSet<u16>,
     pub log_file: Option<PathBuf>,
+    pub tls: Option<TlsConfig>
 }
 
 impl CliArgs {
@@ -44,12 +47,26 @@ impl CliArgs {
                     .num_args(0..=1)
             )
             .arg(
-                Arg::new("log-file")
-                    .long("log-file")
+                Arg::new("log_file")
+                    .long("log_file")
                     .help("Logs all requests to a file")
                     .value_hint(ValueHint::FilePath)
                     .num_args(1)
                     .default_missing_value("requests.log")
+            )
+            .arg(
+                Arg::new("tls")
+                    .long("tls")
+                    .help("Enables TLS (HTTPS) with the provided certificate and private key files")
+                    .num_args(2)
+                    .value_names(&["CERT", "KEY"])
+                    .value_hint(ValueHint::FilePath)
+            )
+            .arg(
+                Arg::new("tls_auto")
+                    .long("tls_auto")
+                    .help("Enables TLS (HTTPS) with a generated self-signed certificate and the provided subject alt names")
+                    .num_args(0..usize::MAX)
             )
             .get_matches();
 
@@ -90,15 +107,31 @@ impl CliArgs {
         }
 
         let log_file = matches
-            .get_one::<String>("log-file")
+            .get_one::<String>("log_file")
             .map(PathBuf::from);
+
+        let mut tls = None;
+        let tls_provided = matches
+            .get_many::<String>("tls")
+            .unwrap_or_default()
+            .collect::<Vec<_>>();
+
+        if tls_provided.len() == 2 {
+            tls = Some(TlsConfig::Provided(tls_provided[0].to_string(), tls_provided[1].to_string()));
+        } else {
+            if let Some(tls_auto) = matches.get_many::<String>("tls_auto") {
+                let domains = tls_auto.cloned().collect::<Vec<_>>();
+                tls = Some(TlsConfig::Generated(domains));
+            }
+        }
     
         Self {
             listen_ports,
             only_localhost,
             spa_file,
             show_html,
-            log_file
+            log_file,
+            tls
         }
     }
 }
