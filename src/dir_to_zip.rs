@@ -1,6 +1,4 @@
 use std::borrow::Cow;
-use std::ffi::OsStr;
-use std::fs;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
@@ -9,10 +7,11 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Frame;
 use hyper::header::{CONTENT_DISPOSITION, CONTENT_TYPE, SERVER};
 use hyper::{Response, StatusCode, Result as HyperResult};
-use tokio::fs::{metadata, File};
+use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use walkdir::WalkDir;
 use zipit::{Archive, FileDateTime};
+use crate::logger::RequestInfo;
 use crate::reader_inspector::ReaderInspector;
 use crate::{BoxBodyResponse, CHUNK_SIZE, SERVER_NAME_HEADER};
 
@@ -28,7 +27,7 @@ fn parse_path_name(path: Cow<str>) -> String {
     }
 }
 
-pub async fn dir_to_zip(dir: impl AsRef<str>, files: Vec<String>) -> HyperResult<BoxBodyResponse> {
+pub async fn dir_to_zip(dir: impl AsRef<str>, files: Vec<String>, request_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
     let (a, b) = tokio::io::duplex(CHUNK_SIZE);
     
     let dir = dir.as_ref();
@@ -81,17 +80,23 @@ pub async fn dir_to_zip(dir: impl AsRef<str>, files: Vec<String>) -> HyperResult
         }
     });
 
-    let reader_stream = ReaderInspector::new(ReaderStream::new(b));
-    let body = StreamBody::new(reader_stream.map_ok(Frame::data)).boxed();
     let zip_name = match dir {
-        "." => "result".to_string(),
-        _ => format!("{}", dir.replace("/", "_")),
+        "." => "result.zip".to_string(),
+        _ => {
+            let mut zip_name = format!("{}.zip", dir.replace("/", "_"));
+            if zip_name.ends_with("_") {
+                zip_name.pop();
+            }
+            zip_name
+        },
     };
-
+    let reader_stream = ReaderInspector::new(ReaderStream::with_capacity(b, CHUNK_SIZE), zip_name.clone(), request_info);
+    let body = StreamBody::new(reader_stream.map_ok(Frame::data)).boxed();
+ 
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "application/zip")
-        .header(CONTENT_DISPOSITION, format!("attachment; filename={}.zip", zip_name))
+        .header(CONTENT_DISPOSITION, format!("attachment; filename={}", zip_name))
         .header(SERVER, SERVER_NAME_HEADER)
         .body(body)
         .unwrap();

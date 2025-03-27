@@ -1,41 +1,43 @@
-use askama::Template;
-use bytes::Bytes;
-use futures_util::TryStreamExt;
-use html::HtmlTemplate;
-use http_body_util::combinators::BoxBody;
-use http_body_util::{BodyExt, StreamBody};
-use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER};
-use hyper_util::rt::TokioIo;
-use local_response::{index, not_found};
-use logger::{update_stats, StatsMsg};
-use reader_inspector::ReaderInspector;
-use serde::Deserialize;
-use tls::{AcceptConnection, TlsWrapper, WithTls, WithoutTls};
-use tokio_util::io::ReaderStream;
-use hyper::{
-    body::Frame,
-    server::conn::http1,
-    service::service_fn,
-    Result as HyperResult,
-    body::Incoming,
-    Request,
-    Response,
-    StatusCode,
-};
-use tokio::{
-    task::JoinHandle,
-    fs::{self, File},
-    net::TcpListener,
-};
-use std::process::exit;
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
+    process::exit,
+    sync::{atomic::{AtomicUsize, Ordering}, Arc},
 };
+use askama::Template;
+use bytes::Bytes;
+use crossterm::{event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}, terminal};
+use futures_util::TryStreamExt;
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, StreamBody};
+use hyper::{
+    body::{Frame, Incoming},
+    server::conn::http1,
+    service::service_fn,
+    Request,
+    Response,
+    Result as HyperResult,
+    StatusCode,
+};
+use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER};
+use hyper_util::rt::TokioIo;
+use logger::{update_stats, RequestInfo, StatsMsg};
+use local_response::{index, not_found};
+use reader_inspector::ReaderInspector;
+use serde::Deserialize;
+use tls::{AcceptConnection, TlsWrapper, WithTls, WithoutTls};
+use tokio::{
+    fs::{self, File},
+    net::{TcpListener, TcpStream},
+    sync::{broadcast, Notify},
+    task::JoinHandle,
+};
+use tokio_util::io::ReaderStream;
 use crate::{
     cli::CliArgs,
-    html::{format_file_size, DirectoryFile},
+    html::{format_file_size, DirectoryFile, HtmlTemplate},
 };
+
 
 #[macro_use]
 mod logger;
@@ -60,7 +62,8 @@ async fn main() {
     // Make space for the logger msgs
     println!();
     logger::init_stats_logger();
-
+    let _ = terminal::enable_raw_mode();
+  
     let cli_args = CliArgs::parse();
     unsafe { 
         SHOW_HTML = cli_args.show_html;
@@ -79,6 +82,8 @@ async fn main() {
     }
 
     let mut listeners = Vec::with_capacity(cli_args.listen_ports.len());
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+
     let protocol = match cli_args.tls {
         Some(_) => "https",
         None => "http"
@@ -100,7 +105,7 @@ async fn main() {
     for port in cli_args.listen_ports {
         let addr = match cli_args.only_localhost {
             true => format!("localhost:{}", port),
-            false => format!("[::]:{}", port),
+            false => format!("0.0.0.0:{}", port), // [::] -> ipv6, 0.0.0.0 -> ipv4. For now, ipv4
         };
 
         let listener = match TcpListener::bind(&addr).await {
@@ -117,42 +122,121 @@ async fn main() {
         };
 
         let tls_cp = tls.clone();
+        let mut shutdown_rx = shutdown_tx.subscribe();
+
         let handle: JoinHandle<anyhow::Result<()>> = tokio::spawn(async move {
+            let mut request_info = RequestInfo::new(0, port);
+            let active_requests = Arc::new(AtomicUsize::new(0));
+            let notify = Arc::new(Notify::new());
+
             loop {
-                let Ok((stream, _)) = listener.accept().await else {
-                    continue;
-                };
-
-                let from_who = stream.peer_addr().unwrap();
-                
-                let stream = match tls_cp.accept(stream).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        print_error!("{e}");
-                        continue;
+                tokio::select! {
+                    Ok((stream, _)) = listener.accept() => {
+                        let active_requests_cp = active_requests.clone();
+                        let notify_cp = notify.clone();
+                        handle_stream(stream, &tls_cp, request_info, active_requests_cp, notify_cp).await;
+                        request_info.request_id += 1;
+                    },
+                    _ = shutdown_rx.recv() => {
+                        if active_requests.load(Ordering::Relaxed) > 0 {
+                            notify.notified().await;
+                        }
+                        print_info!("Shutting down server on {}", addr);
+                        break Ok(())
                     }
-                };
-                let io = TokioIo::new(stream);
-
-                tokio::spawn(async move {
-                    update_stats(StatsMsg::NewRequest);
-                    if let Err(err) = http1::Builder::new()
-                        .serve_connection(io, service_fn(|req| handle_response(req, from_who, port)))
-                        .await
-                    {
-                        print_error!("{} -> Failed to serve connection: {:?}", from_who, err);
-                    }
-                    update_stats(StatsMsg::RequestEnded);
-                });
+                }
             }
         });
 
         listeners.push(handle);
     }
 
+    let mut ctrl_c = KeyPress::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let mut enter = KeyPress::new(KeyCode::Enter, KeyModifiers::empty());
+    loop {
+        if let Ok(Event::Key(e)) = crossterm::event::read() {
+            if ctrl_c.pressing(&e) {
+                print_info!("Shutdown signal received, shutting down gracefully... Press Ctrl + c again to force");
+                let _ = terminal::disable_raw_mode();
+                break
+            }
+            if enter.pressing(&e) {
+                update_stats(StatsMsg::ShowDetails);
+            }
+        }
+    }
+
+    drop(shutdown_tx);
     for handle in listeners {
         let _ = handle.await;
     }
+}
+
+struct KeyPress {
+    key: KeyCode,
+    modifiers: KeyModifiers,
+    released: bool
+}
+impl KeyPress {    
+    pub fn new(key: KeyCode, modifiers: KeyModifiers) -> Self {
+        Self { key, modifiers, released: true }
+    }
+
+    pub fn pressing(&mut self, e: &KeyEvent) -> bool {
+        if e.code != self.key || e.modifiers != self.modifiers {
+            return false;
+        }
+
+        let mut return_value = false;
+        if self.released && e.kind == KeyEventKind::Press {
+            return_value = true;
+        }
+
+        match e.kind {
+            KeyEventKind::Release => self.released = true,
+            KeyEventKind::Press => self.released = false,
+            _ => {}
+        }
+        return return_value;
+    }
+}
+
+async fn handle_stream(
+    stream: TcpStream, 
+    tls_cp: &TlsWrapper, 
+    request_info: RequestInfo,
+    active_requests: Arc<AtomicUsize>,
+    notify: Arc<Notify>
+) {
+    let from_who = stream.peer_addr().unwrap_or("127.0.0.1:0".parse().unwrap());
+    
+    let stream = match tls_cp.accept(stream).await {
+        Ok(s) => s,
+        Err(e) => {
+            print_error!("{e}");
+            return;
+        }
+    };
+
+    
+
+    let io = TokioIo::new(stream);
+    tokio::spawn(async move {
+        active_requests.fetch_add(1, Ordering::Relaxed);
+        update_stats(StatsMsg::NewRequest(request_info, from_who));
+
+        if let Err(err) = http1::Builder::new()
+            .serve_connection(io, service_fn(|req| handle_response(req, from_who, request_info)))
+            .await
+        {
+            print_error!("{} -> Failed to serve connection: {}", from_who, err.to_string());
+        }
+
+        if active_requests.fetch_sub(1, Ordering::Relaxed) == 1 {
+            notify.notify_one();
+        }
+        update_stats(StatsMsg::RequestEnded(request_info));
+    });
 }
 
 #[derive(Deserialize, Debug)]
@@ -160,12 +244,12 @@ struct QueryParams {
     files: String
 }
 
-async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> HyperResult<BoxBodyResponse> {
+async fn handle_response(req: Request<Incoming>, who: SocketAddr, request_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
     let path_raw = urlencoding::decode(req.uri().path()).unwrap_or_default();
 
     let method = req.method();
     let now = chrono::Local::now().format("%d-%m-%Y %H:%M:%S");
-    print_request!(":{port} [{now}] --> {who} --> {method} {path_raw}");
+    print_request!("[{now}] {who} --> :{} --> {method} {path_raw}", request_info.listener);
 
     let path = match path_raw.len() {
         1 => ".", // If the path is just '/', serve the current directory
@@ -187,7 +271,7 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
             return Ok(not_found());
         };
 
-        return dir_to_zip::dir_to_zip(path, files).await;
+        return dir_to_zip::dir_to_zip(path, files, request_info).await;
     }
 
     let path_metadata = match fs::metadata(path).await {
@@ -196,7 +280,7 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
     };
 
     if path_metadata.is_file() {
-        return file_send(path, path_metadata.len() as usize).await
+        return file_send(path, path_metadata.len() as usize, request_info).await
     }
 
     unsafe {
@@ -210,14 +294,14 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
                 }
             };
 
-            return file_send(spa_file, metadata.len() as usize).await;
+            return file_send(spa_file, metadata.len() as usize, request_info).await;
         }
 
         // If the --html flag is set, serve the index.html file
         if SHOW_HTML {
             let html_path = Path::new(path).join("index.html");
             if let Ok(metadata) = html_path.metadata() {
-                return file_send(html_path, metadata.len() as usize).await;
+                return file_send(html_path, metadata.len() as usize, request_info).await;
             }
         }
     }
@@ -229,8 +313,9 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, port: u16) -> 
     
     let template = HtmlTemplate::new(path_raw, files_in_curr_path).unwrap();
     let html = template.render().unwrap();
-    update_stats(StatsMsg::SendedBytes(html.len() as u32));
-    Ok(index(html))
+    update_stats(StatsMsg::SendedBytes(request_info, html.len() as u32, "*html*".to_owned()));
+    update_stats(StatsMsg::EndedFile(request_info, "*html*".to_owned()));
+    Ok(index(html)) 
 }
 
 
@@ -268,11 +353,13 @@ fn get_files_in_dir2(path: impl AsRef<Path>) -> Result<Vec<DirectoryFile>, std::
 }
 
 
-async fn file_send(filename: impl AsRef<Path>, file_len: usize) -> HyperResult<BoxBodyResponse> {
+async fn file_send(filename: impl AsRef<Path>, file_len: usize, request_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
     //Wrap to a tokio_util::io::ReaderStream
     let reader_stream = match File::open(&filename).await {
         Ok(file) => ReaderInspector::new(
-            ReaderStream::with_capacity(file, CHUNK_SIZE)
+            ReaderStream::with_capacity(file, CHUNK_SIZE),
+            filename.as_ref().to_string_lossy().to_string(),
+            request_info
         ),
         Err(_) => return Ok(not_found()),
     };

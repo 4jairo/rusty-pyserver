@@ -1,31 +1,24 @@
-use std::{collections::VecDeque, fs::File, io::Write, sync::{mpsc, OnceLock}, time::{Duration, Instant}};
-use crossterm::{cursor, execute, style::{Color, Print, ResetColor, SetForegroundColor}, terminal::{Clear, ClearType}};
+use std::{collections::{HashMap, VecDeque}, fs::File, io::Write, net::SocketAddr, sync::{mpsc, OnceLock}, time::{Duration, Instant}};
+use crossterm::{cursor::{self, MoveToColumn, MoveUp}, execute, style::{Color, Print, ResetColor, SetForegroundColor}, terminal::{Clear, ClearType}};
 use crate::{html::format_file_size, LOG_FILE};
 
 macro_rules! ___log_msg {
-    ($stats:expr ; $($args:expr),+ $(,)?) => {{
+    ($tracker:expr ; $($args:expr),+ $(,)?) => {{
         crossterm::execute!(
             std::io::stdout(),
 
-            // clear line and Print stats line
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
-            crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
-            crossterm::style::Print(format_args!(
-                "Total requests: {} | Current requests: {} | Bytes/s: {}/s",
-                $stats.total_requests, $stats.requests, format_file_size($stats.bandwith.get_bandwith())
-            )),
-            crossterm::style::ResetColor,
-
-            // move 1 up and clear the log line
+            // move 1 up, clear line, print log_msg
             crossterm::cursor::MoveToColumn(0),
             crossterm::cursor::MoveUp(1),
             crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
-
-            // Print log and move 2 down (original position)
             $( $args, )*
+            crossterm::style::Print("\n"),
             
-            crossterm::style::Print("\n\n"),
-            crossterm::style::ResetColor
+            // print stats line, move 1 down (\n)
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+            crossterm::style::SetForegroundColor(crossterm::style::Color::DarkGrey),
+            crossterm::style::Print($tracker.get_print_stats()),
+            crossterm::style::ResetColor,
         )
     }};
 }
@@ -61,14 +54,159 @@ macro_rules! print_request {
 
 
 
-#[derive(Default)]
+#[derive(Debug)]
 pub struct Stats {
     pub requests: u32,
-    pub total_requests: u32,
-    pub bandwith: BandwithTracker,
+    pub who: SocketAddr,
+    pub bandwith: HashMap<String, BandwithTracker>,
+}
+impl Stats {
+    pub fn with_who(who: SocketAddr) -> Self {
+        Self {
+            requests: 0,
+            bandwith: HashMap::default(),
+            who
+        }
+    }
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, Copy)]
+pub struct RequestInfo {
+    pub request_id: usize,
+    pub listener: u16
+}
+impl RequestInfo {
+    pub fn new(request_id: usize, listener: u16) -> Self {
+        Self {
+            request_id, listener
+        }
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct RequestsTracker {
+    total_requests: u32,
+    requests: HashMap<u16, HashMap<usize, Stats>>
+}
+impl RequestsTracker {
+    pub fn sended_bytes(&mut self, req_info: RequestInfo, b: u32, file: String) {
+        let listener = self.requests.entry(req_info.listener).or_default();
+        if let Some(stats) = listener.get_mut(&req_info.request_id) {
+
+            match stats.bandwith.get_mut(&file) {
+                None => {
+                    let mut bt = BandwithTracker::default();
+                    bt.add_bytes(b);
+                    stats.bandwith.insert(file, bt);
+                    self.total_requests += 1;
+                },
+                Some(bt) => bt.add_bytes(b)
+            }
+        }
+    }
+
+    pub fn ended_file(&mut self, req_info: RequestInfo, file: String) {
+        if let Some(listener) = self.requests.get_mut(&req_info.listener) {
+            if let Some(stats) = listener.get_mut(&req_info.request_id) {
+                stats.bandwith.remove(&file);
+            }
+        }
+    }
+    
+    pub fn new_request(&mut self, req_info: RequestInfo, who: SocketAddr) {
+        let listener = self.requests.entry(req_info.listener).or_default();
+        let stats = listener.entry(req_info.request_id).or_insert(Stats::with_who(who));
+        
+        stats.requests += 1;
+        self.total_requests += 1;
+    }
+
+    pub fn request_ended(&mut self, req_info: RequestInfo) {
+        if let Some(listener) = self.requests.get_mut(&req_info.listener) {
+            listener.remove(&req_info.request_id);
+        }
+    }
+
+    pub fn current_requests(&self) -> u32 {
+        let mut total = 0;
+
+        for inner in self.requests.values() {
+            for stats in inner.values() {
+                total += stats.requests
+            }
+        }
+        total
+    }
+
+    pub fn print_details(&mut self) {
+        let mut stdout = std::io::stdout();
+        let tab = "    ";
+
+        let _ = execute!(
+            stdout,
+            MoveToColumn(0),
+            MoveUp(1),
+            Clear(ClearType::CurrentLine),
+        );
+
+        for (listener, requests) in self.requests.iter_mut() {
+            let _ = execute!(
+                stdout,
+                Print(format_args!("Listener {}:\n", listener)),
+            );
+
+            for (request_id, stats) in requests {
+                let _ = execute!(
+                    stdout,
+                    SetForegroundColor(Color::Blue),
+                    Print(format_args!("{tab}Request Id: {}, From: {}, Total Requests: {}\n", request_id, stats.who, stats.requests)),
+                    ResetColor
+                );
+
+                for (file, tracker) in stats.bandwith.iter_mut() {
+                    let _ = execute!(
+                        stdout,
+                        SetForegroundColor(Color::Green),
+                        Print(format_args!("{tab}{tab}File: {}, Bandwidth: {}/s\n", file, format_file_size(tracker.get_bandwith()))),
+                        ResetColor
+                    );
+                }
+            }
+        }
+
+        let _ = execute!(
+            stdout,
+            SetForegroundColor(Color::DarkGrey),
+            Print(self.get_print_stats()),
+            ResetColor,
+        );
+    }
+
+    pub fn get_print_stats(&mut self) -> String {
+        let bw = format_file_size(self.get_bandwith());
+        let current_requests = self.current_requests();
+
+        format!(
+            "Total requests: {} | Current requests: {} | Bytes/s: {}/s (press 'enter' for detailed stats)\n",
+            self.total_requests, current_requests, bw
+        )
+    } 
+
+    pub fn get_bandwith(&mut self) -> u64 {
+        let mut total = 0;
+
+        for inner in self.requests.values_mut() {
+            for stats in inner.values_mut() {
+                for bt in stats.bandwith.values_mut() {
+                    total += bt.get_bandwith();   
+                }
+            }
+        }
+        total
+    }
+}
+
+#[derive(Default, Debug)]
 pub struct BandwithTracker {
     timestamps: VecDeque<(Instant, u32)>
 }
@@ -95,10 +233,20 @@ impl BandwithTracker {
 #[derive(Debug)]
 pub enum StatsMsg {
     Refresh,
-    SendedBytes(u32),
-    NewRequest,
-    RequestEnded
-}
+    ShowDetails,
+    SendedBytes(RequestInfo, u32, String),
+    EndedFile(RequestInfo, String),
+    NewRequest(RequestInfo, SocketAddr),
+    RequestEnded(RequestInfo)
+} 
+
+// #[derive(Debug)]
+// pub struct SendedBytesMsg {
+//     request_info: RequestInfo,
+//     bytes: u32,
+
+// }
+
 pub enum LogMsg {
     Error(String, bool, i32),
     Info(String),
@@ -115,7 +263,7 @@ pub fn update_stats(msg: StatsMsg) {
     }
 }
 
-fn print_stats(stats: &mut Stats) {
+fn print_stats(tracker: &mut RequestsTracker) {
     let _ = execute!(std::io::stdout(), 
 
         // Move 1 up and clear stats line
@@ -125,14 +273,10 @@ fn print_stats(stats: &mut Stats) {
         SetForegroundColor(Color::DarkGrey),
 
         // Print updated stats && move 1 down
-        Print(format_args!(
-            "Total requests: {} | Current requests: {} | Bytes/s: {}/s\n",
-            stats.total_requests, stats.requests, format_file_size(stats.bandwith.get_bandwith())
-        )),
+        Print(tracker.get_print_stats()),
         ResetColor,
     );
 }
-
 
 fn log_request(file: &mut Option<File>, request: &String) {
     unsafe {
@@ -167,7 +311,8 @@ pub fn init_stats_logger() {
     });
 
     std::thread::spawn(move || {
-        let mut stats = Stats::default();
+        // let mut stats = Stats::default();
+        let mut tracker = RequestsTracker::default();
         let mut logs_file = None;
 
         while let Ok(msg) = rx.recv() {
@@ -176,7 +321,7 @@ pub fn init_stats_logger() {
                     log_request(&mut logs_file, &e);
 
                     let r = ___log_msg!(
-                        stats;
+                        tracker;
                         crossterm::style::SetForegroundColor(crossterm::style::Color::Red),
                         crossterm::style::Print("⚠️ "),  
                         crossterm::style::Print(e),
@@ -187,9 +332,9 @@ pub fn init_stats_logger() {
                 }
                 LogMsg::Info(i) => {
                     log_request(&mut logs_file, &i);
-
+                    
                     let _ = ___log_msg!(
-                        stats;
+                        tracker;
                         crossterm::style::SetForegroundColor(crossterm::style::Color::Yellow),
                         crossterm::style::Print("ℹ️ "),  
                         crossterm::style::Print(i),
@@ -199,26 +344,29 @@ pub fn init_stats_logger() {
                     log_request(&mut logs_file, &r);
 
                     let _ = ___log_msg!(
-                        stats;
+                        tracker;
                         crossterm::style::Print(r),
                     );                
                 },
                 LogMsg::Stats(s) => match s {
-                    StatsMsg::NewRequest => {
-                        stats.requests += 1;
-                        stats.total_requests += 1;
+                    StatsMsg::NewRequest(req_info, who) => {
+                        tracker.new_request(req_info, who);
                     }
-                    StatsMsg::RequestEnded => {
-                        if stats.requests > 0 {
-                            stats.requests -= 1;
-                        }
+                    StatsMsg::RequestEnded(req_info) => {
+                        tracker.request_ended(req_info);
                     },
-                    StatsMsg::SendedBytes(b) => {
-                        stats.bandwith.add_bytes(b);
+                    StatsMsg::SendedBytes(req_info, b, file) => {
+                        tracker.sended_bytes(req_info, b, file);
+                    },
+                    StatsMsg::EndedFile(req_info, file) => {
+                        tracker.ended_file(req_info, file);
                     },
                     StatsMsg::Refresh => {
-                        print_stats(&mut stats);
+                        print_stats(&mut tracker);
                     },
+                    StatsMsg::ShowDetails => {
+                        tracker.print_details();
+                    }
                 }
             }
         }
