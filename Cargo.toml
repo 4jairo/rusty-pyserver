@@ -18,7 +18,6 @@ hyper = { version = "1.3.1", features = ["full"] }
 hyper-util = { version = "0.1.3", features = ["full"] }
 mime_guess = "2.0.5"
 natord = "1.0.9"
-pin-project-lite = "0.2.14"
 rcgen = "0.13.2"
 rustls = "0.23.25"
 serde = "1.0.209"

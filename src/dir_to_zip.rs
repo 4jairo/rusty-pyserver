@@ -11,8 +11,8 @@ use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use walkdir::WalkDir;
 use zipit::{Archive, FileDateTime};
+use crate::body_inspector::BoxBodyInspector;
 use crate::logger::RequestInfo;
-use crate::reader_inspector::ReaderInspector;
 use crate::{BoxBodyResponse, CHUNK_SIZE, SERVER_NAME_HEADER};
 
 fn parse_path_name(path: Cow<str>) -> String {
@@ -27,7 +27,7 @@ fn parse_path_name(path: Cow<str>) -> String {
     }
 }
 
-pub async fn dir_to_zip(dir: impl AsRef<str>, files: Vec<String>, request_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
+pub async fn dir_to_zip(dir: impl AsRef<str>, files: Vec<String>, req_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
     let (a, b) = tokio::io::duplex(CHUNK_SIZE);
     
     let dir = dir.as_ref();
@@ -90,8 +90,12 @@ pub async fn dir_to_zip(dir: impl AsRef<str>, files: Vec<String>, request_info: 
             zip_name
         },
     };
-    let reader_stream = ReaderInspector::new(ReaderStream::with_capacity(b, CHUNK_SIZE), zip_name.clone(), request_info);
-    let body = StreamBody::new(reader_stream.map_ok(Frame::data)).boxed();
+    let reader_stream = ReaderStream::with_capacity(b, CHUNK_SIZE);
+    let body = BoxBodyInspector::new(
+        StreamBody::new(reader_stream.map_ok(Frame::data)).boxed(), 
+        zip_name.clone(), 
+        req_info
+    );
  
     let response = Response::builder()
         .status(StatusCode::OK)

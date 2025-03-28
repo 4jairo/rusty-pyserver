@@ -5,10 +5,10 @@ use std::{
     sync::{atomic::{AtomicUsize, Ordering}, Arc},
 };
 use askama::Template;
+use body_inspector::BoxBodyInspector;
 use bytes::Bytes;
 use crossterm::{event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}, terminal};
 use futures_util::TryStreamExt;
-use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::{
     body::{Frame, Incoming},
@@ -23,7 +23,6 @@ use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER};
 use hyper_util::rt::TokioIo;
 use logger::{update_stats, RequestInfo, StatsMsg};
 use local_response::{index, not_found};
-use reader_inspector::ReaderInspector;
 use serde::Deserialize;
 use tls::{AcceptConnection, TlsWrapper, WithTls, WithoutTls};
 use tokio::{
@@ -41,20 +40,20 @@ use crate::{
 
 #[macro_use]
 mod logger;
-mod reader_inspector;
+mod body_inspector;
 mod html;
 mod cli;
 mod dir_to_zip;
 mod local_response;
 mod tls;
 
-type BoxBodyResponse = Response<BoxBody<Bytes, std::io::Error>>;
+type BoxBodyResponse = Response<BoxBodyInspector<Bytes, std::io::Error>>;
 
 static mut SHOW_HTML: bool = false;
 static mut SPA_FILE: Option<PathBuf> = None;
 static mut LOG_FILE: Option<PathBuf> = None;
 const SERVER_NAME_HEADER: &str = "RustyPyserver";
-const CHUNK_SIZE: usize = 32 * 1024;
+const CHUNK_SIZE: usize = 96 * 1024; // bigger chunk == less update_stats(BytesSended)
 
 
 #[tokio::main]
@@ -69,7 +68,6 @@ async fn main() {
         SHOW_HTML = cli_args.show_html;
         LOG_FILE = cli_args.log_file;
     };
-
 
     // If the SPA file exists, set it to the global variable
     if let Some(spa_file_path) = cli_args.spa_file {
@@ -244,12 +242,12 @@ struct QueryParams {
     files: String
 }
 
-async fn handle_response(req: Request<Incoming>, who: SocketAddr, request_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
+async fn handle_response(req: Request<Incoming>, who: SocketAddr, req_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
     let path_raw = urlencoding::decode(req.uri().path()).unwrap_or_default();
 
     let method = req.method();
     let now = chrono::Local::now().format("%d-%m-%Y %H:%M:%S");
-    print_request!("[{now}] {who} --> :{} --> {method} {path_raw}", request_info.listener);
+    print_request!("[{now}] {who} --> :{} --> {method} {path_raw}", req_info.listener);
 
     let path = match path_raw.len() {
         1 => ".", // If the path is just '/', serve the current directory
@@ -265,22 +263,22 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, request_info: 
 
         let query_raw = urlencoding::decode(req.uri().query().unwrap_or_default()).unwrap_or_default();
         let Ok(files_json) = serde_qs::from_str::<QueryParams>(&query_raw) else {
-            return Ok(not_found());
+            return Ok(not_found(req_info));
         };
         let Ok(files) = serde_json::from_str::<Vec<String>>(&files_json.files) else {
-            return Ok(not_found());
+            return Ok(not_found(req_info));
         };
 
-        return dir_to_zip::dir_to_zip(path, files, request_info).await;
+        return dir_to_zip::dir_to_zip(path, files, req_info).await;
     }
 
     let path_metadata = match fs::metadata(path).await {
         Ok(metadata) => metadata,
-        Err(_) => return Ok(not_found()),
+        Err(_) => return Ok(not_found(req_info)),
     };
 
     if path_metadata.is_file() {
-        return file_send(path, path_metadata.len() as usize, request_info).await
+        return file_send(path, path_metadata.len() as usize, req_info).await
     }
 
     unsafe {
@@ -290,32 +288,30 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, request_info: 
                 Ok(m) => m,
                 Err(e) => {
                     print_error!("Error reading SPA file metadata: {e}");
-                    return Ok(not_found());
+                    return Ok(not_found(req_info));
                 }
             };
 
-            return file_send(spa_file, metadata.len() as usize, request_info).await;
+            return file_send(spa_file, metadata.len() as usize, req_info).await;
         }
 
         // If the --html flag is set, serve the index.html file
         if SHOW_HTML {
             let html_path = Path::new(path).join("index.html");
             if let Ok(metadata) = html_path.metadata() {
-                return file_send(html_path, metadata.len() as usize, request_info).await;
+                return file_send(html_path, metadata.len() as usize, req_info).await;
             }
         }
     }
 
     let files_in_curr_path = match get_files_in_dir2(path) {
         Ok(files) => files,
-        Err(_) => return Ok(not_found()),
+        Err(_) => return Ok(not_found(req_info)),
     };
     
     let template = HtmlTemplate::new(path_raw, files_in_curr_path).unwrap();
     let html = template.render().unwrap();
-    update_stats(StatsMsg::SendedBytes(request_info, html.len() as u32, "*html*".to_owned()));
-    update_stats(StatsMsg::EndedFile(request_info, "*html*".to_owned()));
-    Ok(index(html)) 
+    Ok(index(html, req_info)) 
 }
 
 
@@ -353,15 +349,10 @@ fn get_files_in_dir2(path: impl AsRef<Path>) -> Result<Vec<DirectoryFile>, std::
 }
 
 
-async fn file_send(filename: impl AsRef<Path>, file_len: usize, request_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
-    //Wrap to a tokio_util::io::ReaderStream
+async fn file_send(filename: impl AsRef<Path>, file_len: usize, req_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
     let reader_stream = match File::open(&filename).await {
-        Ok(file) => ReaderInspector::new(
-            ReaderStream::with_capacity(file, CHUNK_SIZE),
-            filename.as_ref().to_string_lossy().to_string(),
-            request_info
-        ),
-        Err(_) => return Ok(not_found()),
+        Ok(file) => ReaderStream::with_capacity(file, CHUNK_SIZE),
+        Err(_) => return Ok(not_found(req_info)),
     };
 
     let mime = unsafe {
@@ -371,8 +362,11 @@ async fn file_send(filename: impl AsRef<Path>, file_len: usize, request_info: Re
         }
     };
 
-    // Convert to http_body_util::BoxBody
-    let stream_body = StreamBody::new(reader_stream.map_ok(Frame::data)).boxed();
+    let stream_body = BoxBodyInspector::new(
+        StreamBody::new(reader_stream.map_ok(Frame::data)).boxed(),
+        filename.as_ref().to_string_lossy().to_string(),
+        req_info
+    );
 
     let response = Response::builder()
         .status(StatusCode::OK)

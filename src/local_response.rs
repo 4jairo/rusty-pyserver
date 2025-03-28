@@ -2,15 +2,16 @@
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Response, StatusCode, header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER}};
-use crate::{BoxBodyResponse, SERVER_NAME_HEADER};
+use crate::{body_inspector::BoxBodyInspector, logger::RequestInfo, BoxBodyResponse, SERVER_NAME_HEADER};
 
  
 /// HTTP status code 404
-pub fn not_found() -> BoxBodyResponse {
-    let body = Full::new("404 Not Found".into())
+pub fn not_found(request_info: RequestInfo) -> BoxBodyResponse {
+    let body_inner = Full::new("404 Not Found".into())
         .map_err(|never| match never {})
         .boxed();
 
+    let body = BoxBodyInspector::new(body_inner, "*404 Not Found*".to_string(), request_info);
     Response::builder()
         .header(SERVER, SERVER_NAME_HEADER)
         .status(StatusCode::NOT_FOUND)
@@ -30,14 +31,15 @@ pub fn not_found() -> BoxBodyResponse {
 //         .unwrap()
 // }
 
-pub fn index(index: impl Into<Bytes>) -> BoxBodyResponse {
+pub fn index(index: impl Into<Bytes>, request_info: RequestInfo) -> BoxBodyResponse {
     let bytes: Bytes = index.into();
     let bytes_len = bytes.len();
 
-    let body = Full::new(bytes)
+    let body_inner = Full::new(bytes)
         .map_err(|never| match never {})
         .boxed();
 
+    let body = BoxBodyInspector::new(body_inner, "*index*".to_string(), request_info);
     Response::builder()
         .status(StatusCode::OK)
         .header(CONTENT_TYPE, "text/html")

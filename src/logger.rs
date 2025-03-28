@@ -56,14 +56,12 @@ macro_rules! print_request {
 
 #[derive(Debug)]
 pub struct Stats {
-    pub requests: u32,
     pub who: SocketAddr,
     pub bandwith: HashMap<String, BandwithTracker>,
 }
 impl Stats {
     pub fn with_who(who: SocketAddr) -> Self {
         Self {
-            requests: 0,
             bandwith: HashMap::default(),
             who
         }
@@ -115,10 +113,9 @@ impl RequestsTracker {
     
     pub fn new_request(&mut self, req_info: RequestInfo, who: SocketAddr) {
         let listener = self.requests.entry(req_info.listener).or_default();
-        let stats = listener.entry(req_info.request_id).or_insert(Stats::with_who(who));
-        
-        stats.requests += 1;
-        self.total_requests += 1;
+        if !listener.contains_key(&req_info.request_id) {
+            listener.insert(req_info.request_id, Stats::with_who(who));
+        }
     }
 
     pub fn request_ended(&mut self, req_info: RequestInfo) {
@@ -127,13 +124,22 @@ impl RequestsTracker {
         }
     }
 
-    pub fn current_requests(&self) -> u32 {
+    pub fn active_requests(&self) -> u32 {
         let mut total = 0;
 
         for inner in self.requests.values() {
             for stats in inner.values() {
-                total += stats.requests
+                total += stats.bandwith.len() as u32;
             }
+        }
+        total
+    }
+
+    pub fn connected_clients(&self) -> u32 {
+        let mut total = 0;
+
+        for inner in self.requests.values() {
+            total += inner.len() as u32;
         }
         total
     }
@@ -159,7 +165,7 @@ impl RequestsTracker {
                 let _ = execute!(
                     stdout,
                     SetForegroundColor(Color::Blue),
-                    Print(format_args!("{tab}Request Id: {}, From: {}, Total Requests: {}\n", request_id, stats.who, stats.requests)),
+                    Print(format_args!("{tab}Id: {}, From: {}, Total Requests: {}\n", request_id, stats.who, stats.bandwith.len())),
                     ResetColor
                 );
 
@@ -177,6 +183,7 @@ impl RequestsTracker {
         let _ = execute!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
+            Print("\n"),
             Print(self.get_print_stats()),
             ResetColor,
         );
@@ -184,11 +191,12 @@ impl RequestsTracker {
 
     pub fn get_print_stats(&mut self) -> String {
         let bw = format_file_size(self.get_bandwith());
-        let current_requests = self.current_requests();
+        let active = self.active_requests();
+        let connected = self.connected_clients();
 
         format!(
-            "Total requests: {} | Current requests: {} | Bytes/s: {}/s (press 'enter' for detailed stats)\n",
-            self.total_requests, current_requests, bw
+            "Requests: (total: {} | active: {} | connected: {} | Bytes/s: {}/s). Press 'enter' for detailed stats\n",
+            self.total_requests, active, connected, bw
         )
     } 
 
@@ -239,13 +247,6 @@ pub enum StatsMsg {
     NewRequest(RequestInfo, SocketAddr),
     RequestEnded(RequestInfo)
 } 
-
-// #[derive(Debug)]
-// pub struct SendedBytesMsg {
-//     request_info: RequestInfo,
-//     bytes: u32,
-
-// }
 
 pub enum LogMsg {
     Error(String, bool, i32),
@@ -311,7 +312,6 @@ pub fn init_stats_logger() {
     });
 
     std::thread::spawn(move || {
-        // let mut stats = Stats::default();
         let mut tracker = RequestsTracker::default();
         let mut logs_file = None;
 
