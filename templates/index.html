@@ -147,7 +147,8 @@
             })
 
             rowsElmt.innerHTML = html
-            zipDownloader.href = `/*${uriPath}?files=${JSON.stringify(selected)}`
+            const zipUrl = selected.length === rows.length ? '' : `?files=${JSON.stringify(selected)}`
+            zipDownloader.href = `/*${uriPath}${zipUrl}`
         }
 
         render()

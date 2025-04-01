@@ -262,11 +262,12 @@ async fn handle_response(req: Request<Incoming>, who: SocketAddr, req_info: Requ
         };
 
         let query_raw = urlencoding::decode(req.uri().query().unwrap_or_default()).unwrap_or_default();
-        let Ok(files_json) = serde_qs::from_str::<QueryParams>(&query_raw) else {
-            return Ok(not_found(req_info));
-        };
-        let Ok(files) = serde_json::from_str::<Vec<String>>(&files_json.files) else {
-            return Ok(not_found(req_info));
+        let files = match serde_qs::from_str::<QueryParams>(&query_raw) {
+            Ok(files_json) => match serde_json::from_str::<Vec<String>>(&files_json.files) {
+                Ok(f) => f,
+                Err(_) => vec![]
+            },
+            Err(_) => vec![]
         };
 
         return dir_to_zip::dir_to_zip(path, files, req_info).await;
