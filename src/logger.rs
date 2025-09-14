@@ -1,6 +1,7 @@
-use std::{collections::{HashMap, VecDeque}, fs::File, io::Write, net::SocketAddr, sync::{mpsc, OnceLock}, time::{Duration, Instant}};
+use std::{borrow::Cow, collections::{HashMap, VecDeque}, fs::File, io::Write, net::SocketAddr, sync::{mpsc, OnceLock}, time::{Duration, Instant}};
 use crossterm::{cursor::{self, MoveToColumn, MoveUp}, execute, style::{Color, Print, ResetColor, SetForegroundColor}, terminal::{Clear, ClearType}};
-use crate::{html::format_file_size, LOG_FILE};
+use hyper::Method;
+use crate::{html::format_file_size, LOG_FILE, SHOW_HTML, SPA_FILE};
 
 macro_rules! ___log_msg {
     ($tracker:expr ; $($args:expr),+ $(,)?) => {{
@@ -43,15 +44,6 @@ macro_rules! print_info {
         }
     }};
 }
-
-macro_rules! print_request {
-    ($($arg:tt)*) => {{
-        if let Some(tx) = crate::logger::LOGGER.get() {
-            let _ = tx.send(crate::logger::LogMsg::Request(format_args!($($arg)*).to_string()));
-        }
-    }};
-}
-
 
 
 #[derive(Debug)]
@@ -248,10 +240,18 @@ pub enum StatsMsg {
     RequestEnded(RequestInfo)
 } 
 
+pub enum RequestKind {
+    Spa,
+    Html,
+    DirToZip,
+    Default,
+    NotFound
+}
+
 pub enum LogMsg {
     Error(String, bool, i32),
     Info(String),
-    Request(String),
+    Request(String, RequestKind),
     Stats(StatsMsg),
 }
 
@@ -261,6 +261,15 @@ pub static LOGGER: OnceLock<mpsc::Sender<LogMsg>> = OnceLock::new();
 pub fn update_stats(msg: StatsMsg) {
     if let Some(tx) = LOGGER.get() {
         let _ = tx.send(LogMsg::Stats(msg));
+    }
+}
+
+pub fn print_request(kind: RequestKind, who: SocketAddr, method: Method, path: &Cow<'_, str>, listener: u16) {
+    if let Some(tx) = LOGGER.get() {
+        let now = chrono::Local::now().format("%d-%m-%Y %H:%M:%S");
+        let msg = format!("[{now}] {who} -> :{listener} -> {method} {path}");
+
+        let _ = tx.send(LogMsg::Request(msg, kind));
     }
 }
 
@@ -340,13 +349,52 @@ pub fn init_stats_logger() {
                         crossterm::style::Print(i),
                     );
                 }
-                LogMsg::Request(r) => {
-                    log_request(&mut logs_file, &r);
+                LogMsg::Request(msg, kind) => {
+                    log_request(&mut logs_file, &msg);
 
-                    let _ = ___log_msg!(
-                        tracker;
-                        crossterm::style::Print(r),
-                    );                
+                    match kind {
+                        RequestKind::Default => {
+                            let _ = ___log_msg!(
+                                tracker;
+                                crossterm::style::Print(msg),
+                            );
+                        },
+                        RequestKind::NotFound => {
+                            let _ = ___log_msg!(
+                                tracker;
+                                crossterm::style::Print(msg),
+                                crossterm::style::SetForegroundColor(crossterm::style::Color::Red),
+                                crossterm::style::Print(" (not found)")
+                            );
+                        },
+                        RequestKind::DirToZip => {
+                            let _ = ___log_msg!(
+                                tracker;
+                                crossterm::style::Print(msg),
+                                crossterm::style::SetForegroundColor(crossterm::style::Color::Green),
+                                crossterm::style::Print(" (zip)"),
+                            );
+                        },
+                        RequestKind::Html => {
+                            let _ = ___log_msg!(
+                                tracker;
+                                crossterm::style::Print(msg),
+                                crossterm::style::SetForegroundColor(crossterm::style::Color::Green),
+                                crossterm::style::Print(" (index.html)"),
+                            );
+                        },
+                        RequestKind::Spa => {
+                            let spa = unsafe { SPA_FILE.as_ref().unwrap_unchecked() };
+                            let spa_file_name = spa.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+
+                            let _ = ___log_msg!(
+                                tracker;
+                                crossterm::style::Print(msg),
+                                crossterm::style::SetForegroundColor(crossterm::style::Color::Green),
+                                crossterm::style::Print(format_args!(" ({})", spa_file_name)),
+                            );
+                        },
+                    }
                 },
                 LogMsg::Stats(s) => match s {
                     StatsMsg::NewRequest(req_info, who) => {

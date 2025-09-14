@@ -1,41 +1,22 @@
 use std::{
-    net::SocketAddr,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::exit,
     sync::{atomic::{AtomicUsize, Ordering}, Arc},
 };
-use askama::Template;
+
 use body_inspector::BoxBodyInspector;
 use bytes::Bytes;
-use crossterm::{event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers}, terminal};
-use futures_util::TryStreamExt;
-use http_body_util::{BodyExt, StreamBody};
-use hyper::{
-    body::{Frame, Incoming},
-    server::conn::http1,
-    service::service_fn,
-    Request,
-    Response,
-    Result as HyperResult,
-    StatusCode,
-};
-use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal;
+use hyper::{server::conn::http1, service::service_fn, Response};
 use hyper_util::rt::TokioIo;
 use logger::{update_stats, RequestInfo, StatsMsg};
-use local_response::{index, not_found};
-use serde::Deserialize;
 use tls::{AcceptConnection, TlsWrapper, WithTls, WithoutTls};
-use tokio::{
-    fs::{self, File},
-    net::{TcpListener, TcpStream},
-    sync::{broadcast, Notify},
-    task::JoinHandle,
-};
-use tokio_util::io::ReaderStream;
-use crate::{
-    cli::CliArgs,
-    html::{format_file_size, DirectoryFile, HtmlTemplate},
-};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, Notify};
+use tokio::task::JoinHandle;
+
+use crate::cli::CliArgs;
 
 
 #[macro_use]
@@ -46,6 +27,7 @@ mod cli;
 mod dir_to_zip;
 mod local_response;
 mod tls;
+mod handle_response;
 
 type BoxBodyResponse = Response<BoxBodyInspector<Bytes, std::io::Error>>;
 
@@ -224,7 +206,7 @@ async fn handle_stream(
         update_stats(StatsMsg::NewRequest(request_info, from_who));
 
         if let Err(err) = http1::Builder::new()
-            .serve_connection(io, service_fn(|req| handle_response(req, from_who, request_info)))
+            .serve_connection(io, service_fn(|req| handle_response::handle_response(req, from_who, request_info)))
             .await
         {
             print_error!("{} -> Failed to serve connection: {}", from_who, err.to_string());
@@ -235,147 +217,4 @@ async fn handle_stream(
         }
         update_stats(StatsMsg::RequestEnded(request_info));
     });
-}
-
-#[derive(Deserialize, Debug)]
-struct QueryParams {
-    files: String
-}
-
-async fn handle_response(req: Request<Incoming>, who: SocketAddr, req_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
-    let path_raw = urlencoding::decode(req.uri().path()).unwrap_or_default();
-
-    let method = req.method();
-    let now = chrono::Local::now().format("%d-%m-%Y %H:%M:%S");
-    print_request!("[{now}] {who} --> :{} --> {method} {path_raw}", req_info.listener);
-
-    let path = match path_raw.len() {
-        1 => ".", // If the path is just '/', serve the current directory
-        _ => &path_raw[1..],
-    };
-
-    // If the path starts with '*', it means we want to zip the directory
-    if path.starts_with("*") {
-        let path = match path {
-            "*" | "*/" => ".",
-            _ => &path[2..],
-        };
-
-        let query_raw = urlencoding::decode(req.uri().query().unwrap_or_default()).unwrap_or_default();
-        let files = match serde_qs::from_str::<QueryParams>(&query_raw) {
-            Ok(files_json) => match serde_json::from_str::<Vec<String>>(&files_json.files) {
-                Ok(f) => f,
-                Err(_) => vec![]
-            },
-            Err(_) => vec![]
-        };
-
-        return dir_to_zip::dir_to_zip(path, files, req_info).await;
-    }
-
-    let path_metadata = match fs::metadata(path).await {
-        Ok(metadata) => metadata,
-        Err(_) => return Ok(not_found(req_info)),
-    };
-
-    if path_metadata.is_file() {
-        return file_send(path, path_metadata.len() as usize, req_info).await
-    }
-
-    unsafe {
-        // If the SPA file exists, serve it
-        if let Some(spa_file) = SPA_FILE.as_ref() {
-            let metadata = match spa_file.metadata() {
-                Ok(m) => m,
-                Err(e) => {
-                    print_error!("Error reading SPA file metadata: {e}");
-                    return Ok(not_found(req_info));
-                }
-            };
-
-            return file_send(spa_file, metadata.len() as usize, req_info).await;
-        }
-
-        // If the --html flag is set, serve the index.html file
-        if SHOW_HTML {
-            let html_path = Path::new(path).join("index.html");
-            if let Ok(metadata) = html_path.metadata() {
-                return file_send(html_path, metadata.len() as usize, req_info).await;
-            }
-        }
-    }
-
-    let files_in_curr_path = match get_files_in_dir2(path) {
-        Ok(files) => files,
-        Err(_) => return Ok(not_found(req_info)),
-    };
-    
-    let template = HtmlTemplate::new(path_raw, files_in_curr_path).unwrap();
-    let html = template.render().unwrap();
-    Ok(index(html, req_info)) 
-}
-
-
-fn get_files_in_dir2(path: impl AsRef<Path>) -> Result<Vec<DirectoryFile>, std::io::Error> {
-    let mut result = std::fs::read_dir(path)?
-        .filter_map(|e| {
-            match e {
-                Err(_) => None,
-                Ok(e) => {
-                    let is_dir = match e.file_type() {
-                        Ok(t) => t.is_dir(),
-                        Err(_) => false
-                    };
-
-                    let file_name = match is_dir {
-                        true => format!("{}/", e.path().file_name().unwrap_or_default().to_string_lossy()),
-                        false => e.path().file_name().unwrap_or_default().to_string_lossy().to_string()
-                    };
-
-                    let file_size = match is_dir {
-                        true => "".to_string(),
-                        false => format_file_size(
-                            e.metadata().map(|m| m.len()).unwrap_or_default()
-                        )
-                    };
-                
-                    Some(DirectoryFile { is_dir, file_size, file_name })
-                }
-            }
-        })
-        .collect::<Vec<_>>();
-
-    result.sort_by(|a,b| natord::compare(&a.file_name, &b.file_name));
-    Ok(result)
-}
-
-
-async fn file_send(filename: impl AsRef<Path>, file_len: usize, req_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
-    let reader_stream = match File::open(&filename).await {
-        Ok(file) => ReaderStream::with_capacity(file, CHUNK_SIZE),
-        Err(_) => return Ok(not_found(req_info)),
-    };
-
-    let mime = unsafe {
-        match SHOW_HTML {
-            true => mime_guess::from_path(&filename).first_or_text_plain(),
-            false => mime_guess::mime::APPLICATION_OCTET_STREAM
-        }
-    };
-
-    let stream_body = BoxBodyInspector::new(
-        StreamBody::new(reader_stream.map_ok(Frame::data)).boxed(),
-        filename.as_ref().to_string_lossy().to_string(),
-        req_info
-    );
-
-    let response = Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, mime.to_string())
-        .header(CONTENT_LENGTH, file_len)
-        .header(SERVER, SERVER_NAME_HEADER)
-        .body(stream_body)
-        .unwrap();
-
-    Ok(response)
 }
