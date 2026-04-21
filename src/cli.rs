@@ -6,6 +6,7 @@ use crate::tls::TlsConfig;
 
 pub struct CliArgs {
     pub show_html: bool,
+    pub enable_upload: bool,
     pub only_localhost: bool,
     pub spa_file: Option<PathBuf>,
     pub listen_ports: HashSet<u16>,
@@ -29,6 +30,12 @@ impl CliArgs {
                 Arg::new("html")
                     .long("html")
                     .help("The browser will show the content of the requested file instead of downloading it")
+                    .num_args(0)
+            )
+            .arg(
+                Arg::new("upload")
+                    .long("upload")
+                    .help("Enables multipart file uploads from the directory index page")
                     .num_args(0)
             )
             .arg(
@@ -81,6 +88,11 @@ impl CliArgs {
         if !show_html {
             show_html = spa_file.is_some();
         }
+
+        let enable_upload = matches
+            .get_one::<bool>("upload")
+            .cloned()
+            .unwrap_or_default();
     
         let only_localhost = matches
             .get_one::<bool>("local")
@@ -132,6 +144,7 @@ impl CliArgs {
             only_localhost,
             spa_file,
             show_html,
+            enable_upload,
             log_file,
             tls
         }

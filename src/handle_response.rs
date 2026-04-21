@@ -1,12 +1,15 @@
-use std::{net::SocketAddr, path::{Path, PathBuf}};
+use std::{net::SocketAddr, path::{Component, Path, PathBuf}};
 use askama::Template;
+use bytes::Bytes;
 use futures_util::TryStreamExt;
-use http_body_util::{BodyExt, StreamBody};
-use hyper::{body::{Frame, Incoming}, header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER}, Request, Response, Result as HyperResult, StatusCode};
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::{Method, Request, Response, Result as HyperResult, StatusCode, body::{Frame, Incoming}, header::{CONTENT_LENGTH, CONTENT_TYPE, SERVER}};
+use multer::Multipart;
 use serde::Deserialize;
 use tokio::fs::{self, File};
+use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
-use crate::{body_inspector::BoxBodyInspector, dir_to_zip, html::{format_file_size, DirectoryFile, HtmlTemplate}, local_response::{index, not_found}, logger::{print_request, RequestInfo, RequestKind}, BoxBodyResponse, CHUNK_SIZE, SERVER_NAME_HEADER, SHOW_HTML, SPA_FILE};
+use crate::{body_inspector::BoxBodyInspector, dir_to_zip, html::{format_file_size, DirectoryFile, HtmlTemplate}, local_response::{index, not_found}, logger::{print_request, RequestInfo, RequestKind}, BoxBodyResponse, CHUNK_SIZE, ENABLE_UPLOAD, SERVER_NAME_HEADER, SHOW_HTML, SPA_FILE};
 
 #[derive(Deserialize, Debug)]
 struct QueryParams {
@@ -25,13 +28,24 @@ struct QueryParams {
 */
 
 pub async fn handle_response(req: Request<Incoming>, who: SocketAddr, req_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
-    let path_raw = urlencoding::decode(req.uri().path()).unwrap_or_default();
+    let path_raw: std::borrow::Cow<'static, str> = std::borrow::Cow::Owned(
+        urlencoding::decode(req.uri().path()).unwrap_or_default().into_owned()
+    );
     let method = req.method().clone();
 
     let path = match path_raw.len() {
         1 => ".", // If the path is just '/', serve the current directory
         _ => &path_raw[1..],
     };
+
+    if method == Method::POST {
+        if unsafe { !ENABLE_UPLOAD } {
+            print_request(RequestKind::NotFound, who, method, &path_raw, req_info.listener);
+            return Ok(not_found(req_info));
+        }
+
+        return upload_file(req, path, who, method, &path_raw, req_info).await;
+    }
 
     // If the path starts with '*', it means we want to zip the directory
     if path.starts_with("*") {
@@ -81,7 +95,7 @@ pub async fn handle_response(req: Request<Incoming>, who: SocketAddr, req_info: 
         };
         
         print_request(RequestKind::Default, who, method, &path_raw, req_info.listener);
-        let template = HtmlTemplate::new(path_raw, files_in_curr_path).unwrap();
+        let template = HtmlTemplate::new(path_raw, files_in_curr_path, unsafe { ENABLE_UPLOAD }).unwrap();
         let html = template.render().unwrap();
         return Ok(index(html, req_info))
     }
@@ -93,6 +107,114 @@ pub async fn handle_response(req: Request<Incoming>, who: SocketAddr, req_info: 
 
     print_request(RequestKind::NotFound, who, method, &path_raw, req_info.listener);
     Ok(not_found(req_info))
+}
+
+async fn upload_file(
+    req: Request<Incoming>,
+    path: &str,
+    who: SocketAddr,
+    method: Method,
+    path_raw: &std::borrow::Cow<'_, str>,
+    req_info: RequestInfo,
+) -> HyperResult<BoxBodyResponse> {
+    match fs::metadata(path).await {
+        Ok(m) if m.is_dir() => m,
+        _ => return Ok(not_found(req_info)),
+    };
+
+    let content_type = match req.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+        Some(c) => c.to_string(),
+        None => return Ok(text_response(StatusCode::BAD_REQUEST, "Missing Content-Type", req_info)),
+    };
+
+    let boundary = match multer::parse_boundary(&content_type) {
+        Ok(b) => b,
+        Err(_) => return Ok(text_response(StatusCode::BAD_REQUEST, "Invalid multipart boundary", req_info)),
+    };
+
+    let body_stream = req
+        .into_body()
+        .into_data_stream()
+        .map_err(|e| std::io::Error::other(e.to_string()));
+    let mut multipart = Multipart::new(body_stream, boundary);
+
+    let mut uploaded_names = Vec::new();
+    loop {
+        let next_field = match multipart.next_field().await {
+            Ok(field) => field,
+            Err(e) => {
+                print_error!("Error reading multipart field: {e}");
+                return Ok(text_response(StatusCode::BAD_REQUEST, "Invalid multipart body", req_info));
+            }
+        };
+
+        let mut field = match next_field {
+            Some(field) => field,
+            None => break,
+        };
+
+        let filename = match field.file_name().and_then(sanitize_filename) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+
+        let file_path = Path::new(path).join(&filename);
+        let mut out_file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+            .await
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                print_error!("Error creating uploaded file {}: {e}", file_path.to_string_lossy());
+                return Ok(text_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create uploaded file", req_info));
+            }
+        };
+
+        loop {
+            let chunk = match field.chunk().await {
+                Ok(chunk) => chunk,
+                Err(e) => {
+                    print_error!("Error streaming multipart chunk: {e}");
+                    return Ok(text_response(StatusCode::BAD_REQUEST, "Failed while reading upload stream", req_info));
+                }
+            };
+
+            let Some(chunk) = chunk else {
+                break;
+            };
+
+            if let Err(e) = out_file.write_all(&chunk).await {
+                print_error!("Error writing uploaded file {}: {e}", file_path.to_string_lossy());
+                return Ok(text_response(StatusCode::INTERNAL_SERVER_ERROR, "Failed to write uploaded file", req_info));
+            }
+        }
+
+        uploaded_names.push(filename);
+    }
+
+    if uploaded_names.is_empty() {
+        return Ok(text_response(StatusCode::BAD_REQUEST, "No valid files uploaded", req_info));
+    }
+
+    let log_details = format!("{} file(s): {}", uploaded_names.len(), uploaded_names.join(", "));
+    print_request(RequestKind::Upload(log_details), who, method, path_raw, req_info.listener);
+
+    Ok(text_response(StatusCode::CREATED, format!("Uploaded {} file(s)", uploaded_names.len()), req_info))
+}
+
+fn sanitize_filename(filename: &str) -> Option<&str> {
+    if filename.is_empty() {
+        return None;
+    }
+
+    let mut components = Path::new(filename).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => Some(filename),
+        _ => None,
+    }
 }
 
 async fn handle_spa(spa_file: &PathBuf, req_info: RequestInfo) -> HyperResult<BoxBodyResponse> {
@@ -136,6 +258,24 @@ async fn file_send(filename: impl AsRef<Path>, file_len: usize, req_info: Reques
         .unwrap();
 
     Ok(response)
+}
+
+fn text_response(status: StatusCode, body: impl Into<Bytes>, req_info: RequestInfo) -> BoxBodyResponse {
+    let bytes: Bytes = body.into();
+    let bytes_len = bytes.len();
+
+    let body_inner = Full::new(bytes)
+        .map_err(|never| match never {})
+        .boxed();
+
+    let body = BoxBodyInspector::new(body_inner, "*upload*".to_string(), req_info);
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(SERVER, SERVER_NAME_HEADER)
+        .header(CONTENT_LENGTH, bytes_len)
+        .body(body)
+        .unwrap()
 }
 
 

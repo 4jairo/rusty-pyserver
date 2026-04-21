@@ -32,6 +32,7 @@ mod handle_response;
 type BoxBodyResponse = Response<BoxBodyInspector<Bytes, std::io::Error>>;
 
 static mut SHOW_HTML: bool = false;
+static mut ENABLE_UPLOAD: bool = false;
 static mut SPA_FILE: Option<PathBuf> = None;
 static mut LOG_FILE: Option<PathBuf> = None;
 const SERVER_NAME_HEADER: &str = "RustyPyserver";
@@ -48,6 +49,7 @@ async fn main() {
     let cli_args = CliArgs::parse();
     unsafe { 
         SHOW_HTML = cli_args.show_html;
+        ENABLE_UPLOAD = cli_args.enable_upload;
         LOG_FILE = cli_args.log_file;
     };
 

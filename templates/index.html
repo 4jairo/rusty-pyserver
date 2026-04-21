@@ -52,6 +52,11 @@
         <button onclick="window.history.back()">Back</button>
         <!-- <a href="/*{{ uri_path }}">Download as ZIP from current path</a> -->
         <a id="zip" href="/*{{uri_path}}">Download Selected files as ZIP</a>
+        {% if upload_enabled %}
+            <input id="upload-file" type="file" multiple />
+            <button id="upload-button">Upload Files</button>
+            <span id="upload-status"></span>
+        {% endif %}
     </div>
 
     <table>
@@ -74,6 +79,9 @@
         const rowsElmt = document.getElementById('rows')
         const title = document.getElementById('title')
         const zipDownloader = document.getElementById('zip')
+        const uploadFileInput = document.getElementById('upload-file')
+        const uploadButton = document.getElementById('upload-button')
+        const uploadStatus = document.getElementById('upload-status')
         const uriPath = "{{ uri_path }}"
         //const uriPath = "/"
 
@@ -149,6 +157,46 @@
             rowsElmt.innerHTML = html
             const zipUrl = selected.length === rows.length ? '' : `?files=${JSON.stringify(selected)}`
             zipDownloader.href = `/*${uriPath}${zipUrl}`
+        }
+
+        async function uploadFile() {
+            const files = uploadFileInput && uploadFileInput.files
+            if (!files || files.length === 0) {
+                if (uploadStatus) uploadStatus.textContent = 'Pick one or more files first'
+                return
+            }
+
+            const formData = new FormData()
+            for (const file of files) {
+                formData.append('files', file, file.name)
+            }
+
+            uploadButton.disabled = true
+            uploadStatus.textContent = 'Uploading...'
+
+            const uploadUrl = window.location.pathname
+            try {
+                const response = await fetch(uploadUrl, {
+                    method: 'POST',
+                    body: formData,
+                })
+
+                const message = await response.text()
+                uploadStatus.textContent = message || (response.ok ? 'Uploaded' : 'Upload failed')
+
+                if (response.ok) {
+                    uploadFileInput.value = ''
+                    window.location.reload()
+                }
+            } catch (error) {
+                uploadStatus.textContent = 'Upload failed'
+            } finally {
+                uploadButton.disabled = false
+            }
+        }
+
+        if (uploadButton) {
+            uploadButton.onclick = uploadFile
         }
 
         render()

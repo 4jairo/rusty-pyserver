@@ -45,13 +45,15 @@ impl Serialize for DirectoryFile {
 #[template(path = "index.html", escape = "none")]
 pub struct HtmlTemplate<'a> {
     uri_path: Cow<'a, str>,
-    files_json: String
+    files_json: String,
+    upload_enabled: bool,
 }
 impl<'a> HtmlTemplate<'a> {
-    pub fn new(uri_path: Cow<'a, str>, files: Vec<DirectoryFile>) ->  serde_json::error::Result<Self> {
+    pub fn new(uri_path: Cow<'a, str>, files: Vec<DirectoryFile>, upload_enabled: bool) ->  serde_json::error::Result<Self> {
         Ok(Self { 
             uri_path, 
-            files_json: serde_json::to_string(&files)?
+            files_json: serde_json::to_string(&files)?,
+            upload_enabled,
         })
     }
 }
